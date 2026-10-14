@@ -235,7 +235,10 @@ const MESSAGE_RULES = [
 
 const CONVENTIONAL_SUBJECT =
 	/^(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\([a-z0-9._/-]+\))?!?: \S.*$/;
-const SUBJECT_EXEMPT = /^(?:Merge |Revert "|fixup! |squash! )/;
+// Merge, revert and autosquash subjects, and the bare version that
+// `npm version` writes, are exempt from the Conventional Commits format.
+const SUBJECT_EXEMPT =
+	/^(?:Merge |Revert "|fixup! |squash! |\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$)/;
 const MAX_SUBJECT_LENGTH = 72;
 
 /**

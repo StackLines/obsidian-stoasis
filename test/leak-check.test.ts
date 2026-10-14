@@ -157,6 +157,8 @@ describe('messages', () => {
 		expect(checkSubject('feat: add thing')).toEqual([]);
 		expect(checkSubject('feat(scope): add thing')).toEqual([]);
 		expect(checkSubject('Merge branch main')).toEqual([]);
+		expect(checkSubject('1.2.3')).toEqual([]);
+		expect(checkSubject('1.2.3-beta.1')).toEqual([]);
 		expect(checkSubject('Added a thing').map((f) => f.rule)).toEqual([
 			'commit-subject-format',
 		]);
