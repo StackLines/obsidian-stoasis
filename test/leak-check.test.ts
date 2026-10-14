@@ -215,6 +215,7 @@ describe('paths', () => {
 	it('allows the expected layout', () => {
 		for (const path of [
 			'README.md',
+			'assets/stoasis-hero.png',
 			'src/main.ts',
 			'.github/workflows/ci.yml',
 			'.github/pull_request_template.md',

@@ -337,7 +337,15 @@ const ROOT_FILES = new Set([
 	'versions.json',
 	'vitest.config.ts',
 ]);
-const ROOT_DIRS = new Set(['.github', '.githooks', 'docs', 'scripts', 'src', 'test']);
+const ROOT_DIRS = new Set([
+	'.github',
+	'.githooks',
+	'assets',
+	'docs',
+	'scripts',
+	'src',
+	'test',
+]);
 const GITHUB_ALLOWED = [
 	/^\.github\/workflows\/[^/]+\.ya?ml$/,
 	/^\.github\/ISSUE_TEMPLATE\/[^/]+$/,
