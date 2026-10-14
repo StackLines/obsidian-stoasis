@@ -83,8 +83,8 @@ workflow files, follows these rules:
   people's names, real note content or ticket numbers.
 - Examples and fixtures use invented values: `alice`, `bob`, `example.com`,
   `https://notes.example.test`, and the documentation address ranges
-  `192.0.2.0/24`, `198.51.100.0/24` and `203.0.113.0/24`. Never use `10.x`,
-  `172.16-31.x` or `192.168.x`, even as examples.
+  `192.0.2.0/24`, `198.51.100.0/24` and `203.0.113.0/24`. Never use addresses
+  from the private ranges of RFC 1918, even as examples.
 - Comments explain behaviour, not where a request came from.
 - User interface strings say "your server", never an environment-specific
   name.
