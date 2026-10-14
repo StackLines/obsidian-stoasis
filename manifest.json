@@ -4,7 +4,7 @@
 	"version": "0.0.1",
 	"minAppVersion": "1.5.0",
 	"description": "Sync notes in real time and tag their frontmatter, using a compatible self-hosted server.",
-	"author": "StackLines",
+	"author": "Filip Černe (StackLines)",
 	"authorUrl": "https://github.com/StackLines",
 	"isDesktopOnly": false
 }
