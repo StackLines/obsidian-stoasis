@@ -43,6 +43,8 @@ export default defineConfig(
 		rules: {
 			// Tests run in Node, never on a device.
 			'obsidianmd/no-nodejs-modules': 'off',
+			// Tests build throwaway vaults on disk, outside the app.
+			'obsidianmd/hardcoded-config-path': 'off',
 		},
 	},
 	{

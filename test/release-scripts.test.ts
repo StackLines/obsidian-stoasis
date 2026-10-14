@@ -1,7 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { checkRelease } from '../scripts/check-release.mjs';
 import { readmeVersion } from '../scripts/check-readme-status.mjs';
+import { installDev } from '../scripts/install-dev.mjs';
 import { extractNotes } from '../scripts/release-notes.mjs';
+import { RELEASE_ASSETS, stageRelease } from '../scripts/stage-release.mjs';
 
 const ok = {
 	tag: '1.2.3',
@@ -82,5 +87,102 @@ describe('readmeVersion', () => {
 
 	it('returns null when the line is absent', () => {
 		expect(readmeVersion('no status here')).toBeNull();
+	});
+});
+
+describe('release assets', () => {
+	const dirs: string[] = [];
+
+	function tempDir(): string {
+		const dir = mkdtempSync(join(tmpdir(), 'stoa-test-'));
+		dirs.push(dir);
+		return dir;
+	}
+
+	/** A fake build output with the three assets and some unrelated files. */
+	function builtRoot(): string {
+		const root = tempDir();
+		writeFileSync(join(root, 'main.js'), '"use strict";');
+		writeFileSync(join(root, 'manifest.json'), JSON.stringify({ id: 'stoa' }));
+		writeFileSync(join(root, 'styles.css'), '.stoa-status {}');
+		writeFileSync(join(root, 'package.json'), '{}');
+		writeFileSync(join(root, 'main.js.map'), '{}');
+		return root;
+	}
+
+	afterEach(() => {
+		for (const dir of dirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('are exactly main.js, manifest.json and styles.css', () => {
+		expect(RELEASE_ASSETS).toEqual(['main.js', 'manifest.json', 'styles.css']);
+	});
+
+	it('are staged alone into a new directory', () => {
+		const out = join(tempDir(), 'assets');
+		expect(stageRelease(builtRoot(), out)).toEqual(RELEASE_ASSETS);
+	});
+
+	it('are not staged when one is missing or empty', () => {
+		const root = builtRoot();
+		writeFileSync(join(root, 'styles.css'), '');
+		expect(() => stageRelease(root, join(tempDir(), 'assets'))).toThrow('styles.css');
+	});
+
+	it('are not staged into a directory that already holds files', () => {
+		const out = tempDir();
+		writeFileSync(join(out, 'other.txt'), 'x');
+		expect(() => stageRelease(builtRoot(), out)).toThrow('not empty');
+	});
+
+	it('are installed into the plugin folder of a vault', () => {
+		const vault = tempDir();
+		mkdirSync(join(vault, '.obsidian'));
+		const pluginDir = installDev(builtRoot(), vault);
+		expect(pluginDir).toBe(join(vault, '.obsidian', 'plugins', 'stoa'));
+		expect(readdirSync(pluginDir).sort()).toEqual(RELEASE_ASSETS);
+	});
+
+	it('are not installed into a folder that is not a vault', () => {
+		expect(() => installDev(builtRoot(), tempDir())).toThrow('not a vault');
+	});
+
+	it('are installed under another config folder when a vault uses one', () => {
+		const vault = tempDir();
+		mkdirSync(join(vault, '.config'));
+		expect(installDev(builtRoot(), vault, '.config')).toBe(
+			join(vault, '.config', 'plugins', 'stoa'),
+		);
+	});
+});
+
+describe('workflows', () => {
+	const workflowDir = new URL('../.github/workflows/', import.meta.url);
+	const workflows = readdirSync(workflowDir).map((name) => ({
+		name,
+		text: readFileSync(new URL(name, workflowDir), 'utf8'),
+	}));
+
+	it('pin every action to a full commit SHA with its version noted above', () => {
+		for (const { name, text } of workflows) {
+			const lines = text.split('\n');
+			lines.forEach((line, index) => {
+				const uses = /\buses:\s*(\S+)/.exec(line);
+				if (!uses) {
+					return;
+				}
+				expect(uses[1], `${name}:${index + 1}`).toMatch(/^[\w.-]+\/[\w.-]+@[0-9a-f]{40}$/);
+				const above = lines.slice(Math.max(0, index - 2), index).join('\n');
+				expect(above, `${name}:${index + 1}`).toMatch(/# [\w.-]+\/[\w.-]+ v\d+\.\d+\.\d+/);
+			});
+		}
+	});
+
+	it('default to no write access', () => {
+		for (const { name, text } of workflows) {
+			expect(/^permissions:\s*(?:\{\}|\n\s+contents: read\s*$)/m.test(text), name).toBe(true);
+		}
 	});
 });

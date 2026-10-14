@@ -13,6 +13,7 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"leak-check": "node scripts/leak-check.mjs",
+		"install-dev": "node scripts/install-dev.mjs",
 		"check": "npm run lint && npm run test && npm run build && node scripts/check-readme-status.mjs && npm run leak-check",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
