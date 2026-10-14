@@ -12,8 +12,11 @@ npm test           # unit tests
 npm run check      # lint, tests, build, README status and leak check
 ```
 
-To try a build, copy `main.js`, `manifest.json` and `styles.css` into
-`<vault>/.obsidian/plugins/stoa/` of a test vault and reload Obsidian.
+To try a build in a test vault, run `npm run build`, then
+`npm run install-dev -- <path-to-vault>`, which copies `main.js`,
+`manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/stoa/`.
+Reload Obsidian and enable the plugin. The README section *Install for
+development* has the details.
 
 The plugin runs on desktop and mobile, so code under `src/` must not use Node
 or Electron APIs. Keep logic that does not need the app in pure modules (see
@@ -98,3 +101,33 @@ If you bundle a dependency or adapt code from another project, add it to
 
 Releases follow `RELEASE-CHECKLIST.md`. Tags are the bare version and are
 created by a maintainer.
+
+## Getting listed
+
+Listing in the Obsidian community directory is a one-time maintainer task.
+After that, every new GitHub release reaches users through the app's normal
+update channel. The steps, from the official *Submit your plugin* guide:
+
+1. The repository is public, and its default branch has `README.md`,
+   `LICENSE` and `manifest.json` at the root. The directory reads the
+   manifest from the head of the default branch, so it must be committed and
+   accurate there. `npm test` checks the manifest rules (id, name,
+   description, versions, no funding link).
+2. The README states what the plugin needs and does: an account on a
+   compatible server, network use, and what is sent. These disclosures are
+   required, not optional.
+3. A GitHub release exists whose tag equals the manifest `version`, with
+   `main.js`, `manifest.json` and `styles.css` attached. The release workflow
+   creates it and, for a public repository, attests the assets, which the
+   directory recommends. Only plain `x.y.z` versions qualify.
+4. Sign in at community.obsidian.md with an Obsidian account and connect the
+   GitHub account that owns the repository (or is a public member of the
+   organisation that owns it).
+5. Add the plugin from the directory's **Plugins** page. An automated review
+   runs; fix what it reports, then publish a new release with a higher
+   version.
+6. Once the plugin is published, update the README's *Community plugins*
+   install section to point to its directory entry.
+
+Before submitting, make sure the plugin does what the README says. A listing
+for a plugin that cannot yet sync or tag is likely to be questioned in review.
