@@ -31,8 +31,14 @@ version (`0.1.0`, never `v0.1.0`) and must equal the version in
     `.obsidian/plugins/stoa/`, enable the plugin, open its settings, and
     confirm the status reads "not paired".
 12. After pushing the tag, the release workflow finishes and the release has
-    exactly the three assets.
+    exactly the three assets. A version with a suffix such as `-beta.1` is
+    published as a prerelease for testers; the community directory only
+    installs plain `x.y.z` versions.
 
-The release workflow needs a repository secret named `LEAKCHECK_DENYLIST`
-holding the same newline-separated list as the local denylist; without it the
-leak check step fails on purpose.
+The release workflow needs no secrets. It builds and checks the assets with a
+read-only token, then publishes exactly the three assets in a separate job
+that runs no project code. When the repository is public, that job also adds a
+build provenance attestation for each asset. An optional repository secret
+named `LEAKCHECK_DENYLIST`, holding the same newline-separated list as the
+local denylist, adds the repository-specific rules to the leak check in CI;
+item 8 is what guarantees they ran before a release.

@@ -26,6 +26,9 @@ const versions = readJson<Record<string, string>>('versions.json');
 const pkg = readJson<{ version: string }>('package.json');
 
 const VERSION = /^\d+\.\d+\.\d+$/;
+// The directory only installs x.y.z releases; a suffix such as -beta.1 is
+// allowed for tester builds, which the release workflow marks as prereleases.
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 describe('manifest.json', () => {
 	it('has an id of lowercase letters and hyphens', () => {
@@ -51,7 +54,7 @@ describe('manifest.json', () => {
 	});
 
 	it('uses x.y.z versions', () => {
-		expect(manifest.version).toMatch(VERSION);
+		expect(manifest.version).toMatch(RELEASE_VERSION);
 		expect(manifest.minAppVersion).toMatch(VERSION);
 	});
 

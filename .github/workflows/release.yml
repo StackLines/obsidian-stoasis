@@ -6,12 +6,15 @@ on:
       - '[0-9]+.[0-9]+.[0-9]+'
       - '[0-9]+.[0-9]+.[0-9]+-*'
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
-  release:
+  # Checks, builds and stages the assets with a read-only token, so no
+  # dependency code ever runs next to a token that can write.
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       # actions/checkout v7.0.1
@@ -19,40 +22,82 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # actions/setup-node v7.0.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      # actions/setup-node v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 22.x
           cache: npm
-      - run: npm ci
       - name: Check that the tag matches the manifest
         run: node scripts/check-release.mjs "$GITHUB_REF_NAME"
+      - run: npm ci
       - run: npm run lint
       - run: npm test
       - run: npm run build
       - name: Check the README status
         run: node scripts/check-readme-status.mjs
+      # The optional LEAKCHECK_DENYLIST secret adds repository-specific rules;
+      # maintainers also run the check with their local denylist before tagging.
       - name: Leak check
         env:
           LEAKCHECK_DENYLIST: ${{ secrets.LEAKCHECK_DENYLIST }}
-        run: npm run leak-check -- --history --require-denylist
+        run: npm run leak-check -- --history
       - name: Stage the release assets
-        run: node scripts/stage-release.mjs "$RUNNER_TEMP/assets"
+        run: node scripts/stage-release.mjs dist
       - name: Extract the release notes
-        run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+        run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" > dist-notes.md
+      # actions/upload-artifact v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: release
+          path: |
+            dist/main.js
+            dist/manifest.json
+            dist/styles.css
+            dist-notes.md
+          if-no-files-found: error
+          retention-days: 1
+
+  # Publishes exactly the three staged assets. Runs no project code.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+
+    steps:
+      # actions/download-artifact v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release
+          path: release
+      # Build provenance for the assets. GitHub offers artifact attestations
+      # for public repositories, so the step is skipped while the repository
+      # is private.
+      - name: Attest the release assets
+        if: ${{ !github.event.repository.private }}
+        # actions/attest v4.2.2
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            release/dist/main.js
+            release/dist/manifest.json
+            release/dist/styles.css
       - name: Create the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           flags=""
           case "$GITHUB_REF_NAME" in
             *-*) flags="--prerelease" ;;
           esac
           gh release create "$GITHUB_REF_NAME" \
-            "$RUNNER_TEMP/assets/main.js" \
-            "$RUNNER_TEMP/assets/manifest.json" \
-            "$RUNNER_TEMP/assets/styles.css" \
+            release/dist/main.js \
+            release/dist/manifest.json \
+            release/dist/styles.css \
             --title "$GITHUB_REF_NAME" \
-            --notes-file "$RUNNER_TEMP/notes.md" \
+            --notes-file release/dist-notes.md \
             --verify-tag \
             $flags
