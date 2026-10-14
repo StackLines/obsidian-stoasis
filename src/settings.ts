@@ -10,6 +10,23 @@ export const DEFAULT_SETTINGS: StoaSettings = {
 	serverUrl: '',
 };
 
+/**
+ * Builds settings from the plugin's stored data, keeping only known fields of
+ * the expected type, so a damaged or hand-edited data file cannot break the
+ * plugin.
+ */
+export function parseSettings(data: unknown): StoaSettings {
+	const settings: StoaSettings = { ...DEFAULT_SETTINGS };
+	if (typeof data !== 'object' || data === null) {
+		return settings;
+	}
+	const stored = data as Record<string, unknown>;
+	if (typeof stored['serverUrl'] === 'string') {
+		settings.serverUrl = stored['serverUrl'];
+	}
+	return settings;
+}
+
 export type PairingState = 'not-paired';
 
 /** Pairing is not implemented yet, so a device is never paired. */

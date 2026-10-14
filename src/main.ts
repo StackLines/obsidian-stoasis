@@ -9,6 +9,7 @@ import {
 	StoaSettingTab,
 	describePairingState,
 	getPairingState,
+	parseSettings,
 	type StoaSettings,
 } from './settings';
 
@@ -45,11 +46,7 @@ export default class StoaPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<StoaSettings> | null,
-		);
+		this.settings = parseSettings(await this.loadData());
 	}
 
 	async saveSettings() {
