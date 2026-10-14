@@ -15,6 +15,7 @@ describe('plugin load', () => {
 
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
 	});
 
 	it('shows the not paired state in the status bar', async () => {
@@ -62,7 +63,7 @@ describe('plugin load', () => {
 		).toHaveLength(0);
 	});
 
-	it('rejects an invalid link without keeping anything', async () => {
+	it('rejects an invalid link without keeping or echoing anything', async () => {
 		const plugin = await loadedPlugin();
 		const handlers = (
 			plugin as unknown as {
@@ -70,9 +71,40 @@ describe('plugin load', () => {
 			}
 		).protocolHandlers;
 
-		handlers.get('stoa')?.({ action: 'stoa', server: 'http://example.test', code: 'abc' });
+		handlers.get('stoa')?.({
+			action: 'stoa',
+			server: 'http://example.test',
+			code: 'secret-code-1',
+		});
 
 		expect(notices).toEqual(['This pairing link is not valid.']);
 		expect(plugin.pendingPairing).toBeNull();
+	});
+
+	it('writes nothing to the console while loading or handling links', async () => {
+		const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((method) =>
+			vi.spyOn(console, method).mockImplementation(() => undefined),
+		);
+		const plugin = await loadedPlugin();
+		const handler = (
+			plugin as unknown as {
+				protocolHandlers: Map<string, (p: Record<string, string>) => void>;
+			}
+		).protocolHandlers.get('stoa');
+
+		handler?.({ action: 'stoa', server: 'https://notes.example.test', code: 'abc123' });
+		handler?.({ action: 'stoa', server: 'notes', code: 'abc123' });
+		handler?.({ action: 'stoa' });
+
+		for (const spy of spies) {
+			expect(spy).not.toHaveBeenCalled();
+		}
+	});
+
+	it('loads stored settings through the same validation', async () => {
+		const plugin = new StoaPlugin({} as never, {} as never);
+		(plugin as unknown as { storedData: unknown }).storedData = { serverUrl: 3 };
+		await plugin.onload();
+		expect(plugin.settings).toEqual({ serverUrl: '' });
 	});
 });

@@ -68,8 +68,35 @@ describe('parsePairingParams', () => {
 		).toMatchObject({ ok: true });
 	});
 
+	it('does not treat a lookalike host as a local development host', () => {
+		for (const server of [
+			'http://localhost.example.test',
+			'http://127.0.0.1.example.test',
+			'http://[::1]:8080',
+		]) {
+			expect(parsePairingParams({ server, code: 'abc' })).toEqual({
+				ok: false,
+				reason: 'insecure-server',
+			});
+		}
+	});
+
+	it('normalises the case of the scheme and host', () => {
+		expect(
+			parsePairingParams({ server: 'HTTPS://Notes.Example.Test/Team', code: 'abc' }),
+		).toMatchObject({ ok: true, request: { server: 'https://notes.example.test/Team' } });
+	});
+
 	it('rejects other schemes and unparseable servers', () => {
-		for (const server of ['ftp://example.test', 'notes', 'javascript:alert(1)']) {
+		for (const server of [
+			'ftp://example.test',
+			'file:///etc/hosts',
+			'data:text/plain,hello',
+			'obsidian://stoa',
+			'https://',
+			'notes',
+			'javascript:alert(1)',
+		]) {
 			expect(parsePairingParams({ server, code: 'abc' })).toEqual({
 				ok: false,
 				reason: 'invalid-server',
@@ -90,10 +117,13 @@ describe('parsePairingParams', () => {
 		}
 	});
 
-	it('rejects a code with whitespace or an absurd length', () => {
-		expect(
-			parsePairingParams({ server: 'https://example.test', code: 'ab cd' }),
-		).toEqual({ ok: false, reason: 'invalid-code' });
+	it('rejects a code with whitespace, control characters or an absurd length', () => {
+		for (const code of ['ab cd', 'ab\tcd', 'ab\u0000cd', 'ab\u007fcd']) {
+			expect(parsePairingParams({ server: 'https://example.test', code })).toEqual({
+				ok: false,
+				reason: 'invalid-code',
+			});
+		}
 		expect(
 			parsePairingParams({
 				server: 'https://example.test',
