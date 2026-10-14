@@ -1,49 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
 <defs>
-  <linearGradient id="scrim" x1="0" x2="1"><stop offset="0" stop-color="#170b2e" stop-opacity=".94"/><stop offset=".52" stop-color="#170b2e" stop-opacity=".54"/><stop offset="1" stop-color="#170b2e" stop-opacity="0"/></linearGradient>
-  <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f4ecff" stop-opacity=".18"/><stop offset=".28" stop-color="#221040" stop-opacity=".82"/><stop offset="1" stop-color="#170b2e" stop-opacity=".68"/></linearGradient>
-  <linearGradient id="rim"><stop offset="0" stop-color="#f4ecff" stop-opacity=".74"/><stop offset=".48" stop-color="#05e5d8" stop-opacity=".42"/><stop offset="1" stop-color="#ff2e97" stop-opacity=".5"/></linearGradient>
-  <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="8"/></filter>
+  <linearGradient id="scrim" x1="0" x2="1"><stop offset="0" stop-color="#070a12" stop-opacity=".92"/><stop offset=".54" stop-color="#0d1422" stop-opacity=".48"/><stop offset="1" stop-color="#070a12" stop-opacity="0"/></linearGradient>
+  <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b7e6ff" stop-opacity=".10"/><stop offset=".28" stop-color="#121b2d" stop-opacity=".38"/><stop offset="1" stop-color="#070a12" stop-opacity=".12"/></linearGradient>
+  <linearGradient id="titleInk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".58" stop-color="#e7f5ff"/><stop offset="1" stop-color="#a9d9f5"/></linearGradient>
+  <linearGradient id="accent" x1="0" x2="1"><stop offset="0" stop-color="#63d9ff"/><stop offset=".7" stop-color="#8f9cff"/><stop offset="1" stop-color="#e8b96a"/></linearGradient>
+  <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
   <style>
-    .title { font-family: DejaVu Sans, sans-serif; font-weight: 700; letter-spacing: .045em; fill: #f4ecff; }
-    .eyebrow, .status { font-family: DejaVu Sans Mono, monospace; letter-spacing: .12em; fill: #f4ecff; }
-    .tagline { font-family: DejaVu Sans, sans-serif; fill: #f4ecff; }
-    .card { font-family: DejaVu Sans, sans-serif; font-weight: 700; fill: #f4ecff; }
+    .title { font-family: DejaVu Sans, sans-serif; font-weight: 700; letter-spacing: .055em; fill: url(#titleInk); }
+    .eyebrow { font-family: DejaVu Sans Mono, monospace; letter-spacing: .13em; fill: #cfeeff; }
+    .tagline { font-family: DejaVu Sans, sans-serif; letter-spacing: .02em; fill: #d9e8f2; }
   </style>
 </defs>
-<rect width="768" height="640" fill="url(#scrim)"/>
-<rect x="52" y="106" width="416" height="122" rx="28" fill="#05e5d8" opacity=".24" filter="url(#shadow)"/>
-<text x="58" y="64" class="eyebrow" font-size="16">OPEN-SOURCE OBSIDIAN PLUGIN</text>
-<text x="58" y="202" class="title" font-size="104">Stoasis</text>
-<line x1="58" y1="226" x2="266" y2="226" stroke="#05e5d8" stroke-width="4" stroke-linecap="round"/>
-<circle cx="284" cy="226" r="5" fill="#ff2e97"/>
-<text x="58" y="252" class="tagline" font-size="20">A shared oasis for your notes.</text>
-<g>
-  <rect x="50" y="490" width="272" height="104" rx="24" fill="url(#glass)" stroke="url(#rim)" stroke-width="1.5"/>
-  <line x1="76" y1="508" x2="297" y2="508" stroke="#05e5d8" stroke-width="3" stroke-linecap="round"/>
-  <text x="76" y="533" class="card" font-size="19">Pairing link</text>
-  <circle cx="76" cy="567" r="5" fill="#05e5d8"/>
-  <text x="92" y="572" class="status" font-size="12">SHIPPED</text>
-</g>
-<g>
-  <rect x="354" y="490" width="272" height="104" rx="24" fill="url(#glass)" stroke="url(#rim)" stroke-width="1.5"/>
-  <line x1="380" y1="508" x2="601" y2="508" stroke="#ff2e97" stroke-width="3" stroke-linecap="round"/>
-  <text x="380" y="533" class="card" font-size="19">Live sync</text>
-  <circle cx="380" cy="567" r="5" fill="#ff2e97"/>
-  <text x="396" y="572" class="status" font-size="12">PLANNED</text>
-</g>
-<g>
-  <rect x="658" y="490" width="272" height="104" rx="24" fill="url(#glass)" stroke="url(#rim)" stroke-width="1.5"/>
-  <line x1="684" y1="508" x2="905" y2="508" stroke="#ffe37b" stroke-width="3" stroke-linecap="round"/>
-  <text x="684" y="533" class="card" font-size="19">Shared spaces</text>
-  <circle cx="684" cy="567" r="5" fill="#ffe37b"/>
-  <text x="700" y="572" class="status" font-size="12">PLANNED</text>
-</g>
-<g>
-  <rect x="962" y="490" width="272" height="104" rx="24" fill="url(#glass)" stroke="url(#rim)" stroke-width="1.5"/>
-  <line x1="988" y1="508" x2="1209" y2="508" stroke="#9c87c4" stroke-width="3" stroke-linecap="round"/>
-  <text x="988" y="533" class="card" font-size="19">AI tags</text>
-  <circle cx="988" cy="567" r="5" fill="#9c87c4"/>
-  <text x="1004" y="572" class="status" font-size="12">PLANNED</text>
-</g>
+<rect width="746" height="640" fill="url(#scrim)"/>
+<rect x="30" y="38" width="520" height="278" rx="30" fill="#63d9ff" opacity=".045" filter="url(#shadow)"/>
+<rect x="60" y="60" width="314" height="40" rx="20" fill="url(#glass)" stroke="#b7e6ff" stroke-opacity=".32"/>
+<circle cx="80" cy="80" r="4" fill="#63d9ff"/>
+<text x="96" y="86" class="eyebrow" font-size="12">OPEN-SOURCE OBSIDIAN PLUGIN</text>
+<text x="60" y="214" class="title" font-size="104">Stoasis</text>
+<line x1="60" y1="238" x2="306" y2="238" stroke="url(#accent)" stroke-width="4" stroke-linecap="round"/>
+<circle cx="324" cy="238" r="5" fill="#e8b96a"/>
+<text x="60" y="264" class="tagline" font-size="20">A shared oasis for your notes.</text>
+<line x1="60" y1="308" x2="476" y2="308" stroke="#b7e6ff" stroke-opacity=".18"/>
 </svg>

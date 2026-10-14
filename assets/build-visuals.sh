@@ -16,42 +16,6 @@ if [[ ! -f "$source_image" ]]; then
 	exit 1
 fi
 
-xml_escape() {
-	printf '%s' "$1" | sed \
-		-e 's/&/\&amp;/g' \
-		-e 's/</\&lt;/g' \
-		-e 's/>/\&gt;/g' \
-		-e 's/"/\&quot;/g' \
-		-e "s/'/\&apos;/g"
-}
-
-write_card() {
-	local x=$1
-	local y=$2
-	local width=$3
-	local height=$4
-	local accent=$5
-	local label=$6
-	local status=$7
-	local font_size=$8
-	local status_size=$9
-	local label_x=$((x + 26))
-	local label_y=$((y + 43))
-	local status_y=$((y + height - 22))
-	local line_x2=$((x + width - 25))
-	local escaped_label
-	local escaped_status
-	escaped_label=$(xml_escape "$label")
-	escaped_status=$(xml_escape "$status")
-	printf '<g>\n'
-	printf '  <rect x="%s" y="%s" width="%s" height="%s" rx="24" fill="url(#glass)" stroke="url(#rim)" stroke-width="1.5"/>\n' "$x" "$y" "$width" "$height"
-	printf '  <line x1="%s" y1="%s" x2="%s" y2="%s" stroke="%s" stroke-width="3" stroke-linecap="round"/>\n' "$label_x" "$((y + 18))" "$line_x2" "$((y + 18))" "$accent"
-	printf '  <text x="%s" y="%s" class="card" font-size="%s">%s</text>\n' "$label_x" "$label_y" "$font_size" "$escaped_label"
-	printf '  <circle cx="%s" cy="%s" r="5" fill="%s"/>\n' "$label_x" "$((status_y - 5))" "$accent"
-	printf '  <text x="%s" y="%s" class="status" font-size="%s">%s</text>\n' "$((label_x + 16))" "$status_y" "$status_size" "$escaped_status"
-	printf '</g>\n'
-}
-
 write_overlay() {
 	local output=$1
 	local width=$2
@@ -60,40 +24,38 @@ write_overlay() {
 	local title_y=$5
 	local title_size=$6
 	local tagline_y=$7
-	local cards_y=$8
-	local card_width=$9
-	local card_height=${10}
-	local first_x=${11}
-	local gap=${12}
-	local card_font=${13}
-	local status_font=${14}
+	local eyebrow_width=$8
+	local eyebrow_size=$9
+	local panel_width=$((title_size * 5))
+	local panel_height=$((title_size * 2 + 70))
+	local panel_x=$((title_x - 30))
+	local panel_y=$((title_y - title_size - 72))
+	local eyebrow_y=$((title_y - title_size - 50))
 
 	{
 		printf '<svg xmlns="http://www.w3.org/2000/svg" width="%s" height="%s" viewBox="0 0 %s %s">\n' "$width" "$height" "$width" "$height"
 		printf '<defs>\n'
-		printf '  <linearGradient id="scrim" x1="0" x2="1"><stop offset="0" stop-color="#170b2e" stop-opacity=".94"/><stop offset=".52" stop-color="#170b2e" stop-opacity=".54"/><stop offset="1" stop-color="#170b2e" stop-opacity="0"/></linearGradient>\n'
-		printf '  <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f4ecff" stop-opacity=".18"/><stop offset=".28" stop-color="#221040" stop-opacity=".82"/><stop offset="1" stop-color="#170b2e" stop-opacity=".68"/></linearGradient>\n'
-		printf '  <linearGradient id="rim"><stop offset="0" stop-color="#f4ecff" stop-opacity=".74"/><stop offset=".48" stop-color="#05e5d8" stop-opacity=".42"/><stop offset="1" stop-color="#ff2e97" stop-opacity=".5"/></linearGradient>\n'
-		printf '  <filter id="shadow" x="-30%%" y="-30%%" width="160%%" height="160%%"><feGaussianBlur stdDeviation="8"/></filter>\n'
+		printf '  <linearGradient id="scrim" x1="0" x2="1"><stop offset="0" stop-color="#070a12" stop-opacity=".92"/><stop offset=".54" stop-color="#0d1422" stop-opacity=".48"/><stop offset="1" stop-color="#070a12" stop-opacity="0"/></linearGradient>\n'
+		printf '  <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b7e6ff" stop-opacity=".10"/><stop offset=".28" stop-color="#121b2d" stop-opacity=".38"/><stop offset="1" stop-color="#070a12" stop-opacity=".12"/></linearGradient>\n'
+		printf '  <linearGradient id="titleInk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset=".58" stop-color="#e7f5ff"/><stop offset="1" stop-color="#a9d9f5"/></linearGradient>\n'
+		printf '  <linearGradient id="accent" x1="0" x2="1"><stop offset="0" stop-color="#63d9ff"/><stop offset=".7" stop-color="#8f9cff"/><stop offset="1" stop-color="#e8b96a"/></linearGradient>\n'
+		printf '  <filter id="shadow" x="-30%%" y="-30%%" width="160%%" height="160%%"><feGaussianBlur stdDeviation="10"/></filter>\n'
 		printf '  <style>\n'
-		printf '    .title { font-family: DejaVu Sans, sans-serif; font-weight: 700; letter-spacing: .045em; fill: #f4ecff; }\n'
-		printf '    .eyebrow, .status { font-family: DejaVu Sans Mono, monospace; letter-spacing: .12em; fill: #f4ecff; }\n'
-		printf '    .tagline { font-family: DejaVu Sans, sans-serif; fill: #f4ecff; }\n'
-		printf '    .card { font-family: DejaVu Sans, sans-serif; font-weight: 700; fill: #f4ecff; }\n'
+		printf '    .title { font-family: DejaVu Sans, sans-serif; font-weight: 700; letter-spacing: .055em; fill: url(#titleInk); }\n'
+		printf '    .eyebrow { font-family: DejaVu Sans Mono, monospace; letter-spacing: .13em; fill: #cfeeff; }\n'
+		printf '    .tagline { font-family: DejaVu Sans, sans-serif; letter-spacing: .02em; fill: #d9e8f2; }\n'
 		printf '  </style>\n'
 		printf '</defs>\n'
-		printf '<rect width="%s" height="%s" fill="url(#scrim)"/>\n' "$((width * 3 / 5))" "$height"
-		printf '<rect x="%s" y="%s" width="%s" height="%s" rx="28" fill="#05e5d8" opacity=".24" filter="url(#shadow)"/>\n' "$((title_x - 6))" "$((title_y - title_size + 8))" "$((title_size * 4))" "$((title_size + 18))"
-		printf '<text x="%s" y="%s" class="eyebrow" font-size="16">OPEN-SOURCE OBSIDIAN PLUGIN</text>\n' "$title_x" "$((title_y - title_size - 34))"
+		printf '<rect width="%s" height="%s" fill="url(#scrim)"/>\n' "$((width * 7 / 12))" "$height"
+		printf '<rect x="%s" y="%s" width="%s" height="%s" rx="30" fill="#63d9ff" opacity=".045" filter="url(#shadow)"/>\n' "$panel_x" "$panel_y" "$panel_width" "$panel_height"
+		printf '<rect x="%s" y="%s" width="%s" height="40" rx="20" fill="url(#glass)" stroke="#b7e6ff" stroke-opacity=".32"/>\n' "$title_x" "$eyebrow_y" "$eyebrow_width"
+		printf '<circle cx="%s" cy="%s" r="4" fill="#63d9ff"/>\n' "$((title_x + 20))" "$((eyebrow_y + 20))"
+		printf '<text x="%s" y="%s" class="eyebrow" font-size="%s">OPEN-SOURCE OBSIDIAN PLUGIN</text>\n' "$((title_x + 36))" "$((eyebrow_y + 26))" "$eyebrow_size"
 		printf '<text x="%s" y="%s" class="title" font-size="%s">Stoasis</text>\n' "$title_x" "$title_y" "$title_size"
-		printf '<line x1="%s" y1="%s" x2="%s" y2="%s" stroke="#05e5d8" stroke-width="4" stroke-linecap="round"/>\n' "$title_x" "$((title_y + 24))" "$((title_x + title_size * 2))" "$((title_y + 24))"
-		printf '<circle cx="%s" cy="%s" r="5" fill="#ff2e97"/>\n' "$((title_x + title_size * 2 + 18))" "$((title_y + 24))"
+		printf '<line x1="%s" y1="%s" x2="%s" y2="%s" stroke="url(#accent)" stroke-width="4" stroke-linecap="round"/>\n' "$title_x" "$((title_y + 24))" "$((title_x + title_size * 2 + 38))" "$((title_y + 24))"
+		printf '<circle cx="%s" cy="%s" r="5" fill="#e8b96a"/>\n' "$((title_x + title_size * 2 + 56))" "$((title_y + 24))"
 		printf '<text x="%s" y="%s" class="tagline" font-size="%s">A shared oasis for your notes.</text>\n' "$title_x" "$tagline_y" "$((title_size / 5))"
-
-		write_card "$first_x" "$cards_y" "$card_width" "$card_height" '#05e5d8' 'Pairing link' 'SHIPPED' "$card_font" "$status_font"
-		write_card "$((first_x + card_width + gap))" "$cards_y" "$card_width" "$card_height" '#ff2e97' 'Live sync' 'PLANNED' "$card_font" "$status_font"
-		write_card "$((first_x + (card_width + gap) * 2))" "$cards_y" "$card_width" "$card_height" '#ffe37b' 'Shared spaces' 'PLANNED' "$card_font" "$status_font"
-		write_card "$((first_x + (card_width + gap) * 3))" "$cards_y" "$card_width" "$card_height" '#9c87c4' 'AI tags' 'PLANNED' "$card_font" "$status_font"
+		printf '<line x1="%s" y1="%s" x2="%s" y2="%s" stroke="#b7e6ff" stroke-opacity=".18"/>\n' "$title_x" "$((tagline_y + 44))" "$((title_x + title_size * 4))" "$((tagline_y + 44))"
 		printf '</svg>\n'
 	} > "$output"
 }
@@ -118,8 +80,8 @@ render_png() {
 hero_overlay="$asset_dir/stoasis-hero-overlay.svg"
 social_overlay="$asset_dir/stoasis-social-preview-overlay.svg"
 
-write_overlay "$hero_overlay" 1998 700 72 242 138 300 538 430 112 54 26 23 14
-write_overlay "$social_overlay" 1280 640 58 202 104 252 490 272 104 50 32 19 12
+write_overlay "$hero_overlay" 1998 700 76 252 138 312 344 14
+write_overlay "$social_overlay" 1280 640 60 214 104 264 314 12
 
 make_base "$work_dir/hero-base.png" 1998 700
 make_base "$work_dir/social-base.png" 1280 640

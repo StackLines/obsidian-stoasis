@@ -1,7 +1,8 @@
 # Visual assets
 
 `stoasis-hero.png` and `stoasis-social-preview.png` combine an original
-painted background with reproducible vector typography and status cards. The
+painted background with reproducible vector typography and a restrained
+glassy title treatment. The
 background was generated on 2026-10-14 with OpenAI's built-in image generation
 tool from an original text prompt. No source image or third-party artwork was
 provided to the generator or incorporated into the result.
