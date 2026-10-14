@@ -1,0 +1,10 @@
+{
+	"id": "stoa",
+	"name": "Stoa",
+	"version": "0.0.1",
+	"minAppVersion": "1.5.0",
+	"description": "Real-time note sync and frontmatter tagging against a compatible self-hosted server.",
+	"author": "StackLines",
+	"authorUrl": "https://github.com/StackLines",
+	"isDesktopOnly": false
+}

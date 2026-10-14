@@ -1,0 +1,9 @@
+/* Stoa styles. Keep this file small; it ships with every release. */
+
+.stoa-status {
+	white-space: nowrap;
+}
+
+.stoa-disclosure {
+	color: var(--text-muted);
+}
