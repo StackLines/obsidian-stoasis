@@ -1,0 +1,5 @@
+#!/bin/sh
+# Rejects commit messages that carry tool trailers, session references or
+# internal identifiers, and checks the subject format.
+# Enable with: git config core.hooksPath .githooks
+exec node "$(dirname "$0")/../scripts/leak-check.mjs" --message-file "$1"
