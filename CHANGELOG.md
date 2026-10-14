@@ -12,7 +12,7 @@ First preview. The plugin loads and shows its state; it does not sync yet.
 ### Added
 
 - Settings tab with the pairing status and a short disclosure about network use.
-- Status bar item that reads "Stoa: not paired".
-- Handler for `obsidian://stoa?server=<url>&code=<code>` links. It validates
+- Status bar item that reads "Stoasis: not paired".
+- Handler for `obsidian://stoasis?server=<url>&code=<code>` links. It validates
   the link and tells you that pairing is not available yet; it makes no
   network request and stores nothing.

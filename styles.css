@@ -1,9 +1,9 @@
-/* Stoa styles. Keep this file small; it ships with every release. */
+/* Stoasis styles. Keep this file small; it ships with every release. */
 
-.stoa-status {
+.stoasis-status {
 	white-space: nowrap;
 }
 
-.stoa-disclosure {
+.stoasis-disclosure {
 	color: var(--text-muted);
 }

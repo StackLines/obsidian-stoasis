@@ -1,5 +1,5 @@
-/** Action name of the pairing link: obsidian://stoa?server=<url>&code=<code>. */
-export const PROTOCOL_ACTION = 'stoa';
+/** Action name of the pairing link: obsidian://stoasis?server=<url>&code=<code>. */
+export const PROTOCOL_ACTION = 'stoasis';
 
 /** Longest pairing code accepted; codes are short, so this is generous. */
 const MAX_CODE_LENGTH = 256;

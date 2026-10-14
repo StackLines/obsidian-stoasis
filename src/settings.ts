@@ -1,12 +1,12 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
-import type StoaPlugin from './main';
+import type StoasisPlugin from './main';
 
-export interface StoaSettings {
+export interface StoasisSettings {
 	/** Server address once paired; empty while the device is not paired. */
 	serverUrl: string;
 }
 
-export const DEFAULT_SETTINGS: StoaSettings = {
+export const DEFAULT_SETTINGS: StoasisSettings = {
 	serverUrl: '',
 };
 
@@ -15,8 +15,8 @@ export const DEFAULT_SETTINGS: StoaSettings = {
  * the expected type, so a damaged or hand-edited data file cannot break the
  * plugin.
  */
-export function parseSettings(data: unknown): StoaSettings {
-	const settings: StoaSettings = { ...DEFAULT_SETTINGS };
+export function parseSettings(data: unknown): StoasisSettings {
+	const settings: StoasisSettings = { ...DEFAULT_SETTINGS };
 	if (typeof data !== 'object' || data === null) {
 		return settings;
 	}
@@ -30,7 +30,7 @@ export function parseSettings(data: unknown): StoaSettings {
 export type PairingState = 'not-paired';
 
 /** Pairing is not implemented yet, so a device is never paired. */
-export function getPairingState(_settings: StoaSettings): PairingState {
+export function getPairingState(_settings: StoasisSettings): PairingState {
 	return 'not-paired';
 }
 
@@ -41,10 +41,10 @@ export function describePairingState(state: PairingState): string {
 	}
 }
 
-export class StoaSettingTab extends PluginSettingTab {
-	plugin: StoaPlugin;
+export class StoasisSettingTab extends PluginSettingTab {
+	plugin: StoasisPlugin;
 
-	constructor(app: App, plugin: StoaPlugin) {
+	constructor(app: App, plugin: StoasisPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -60,7 +60,7 @@ export class StoaSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl).setName('Network and privacy').setHeading();
 		containerEl.createEl('p', {
-			cls: 'stoa-disclosure',
+			cls: 'stoasis-disclosure',
 			text:
 				'This plugin needs an account on a compatible server. ' +
 				'It only contacts the server you pair it with, and sends note ' +

@@ -6,15 +6,15 @@ import {
 } from './protocol';
 import {
 	DEFAULT_SETTINGS,
-	StoaSettingTab,
+	StoasisSettingTab,
 	describePairingState,
 	getPairingState,
 	parseSettings,
-	type StoaSettings,
+	type StoasisSettings,
 } from './settings';
 
-export default class StoaPlugin extends Plugin {
-	settings: StoaSettings = { ...DEFAULT_SETTINGS };
+export default class StoasisPlugin extends Plugin {
+	settings: StoasisSettings = { ...DEFAULT_SETTINGS };
 
 	/** A received pairing link, kept in memory only until pairing exists. */
 	pendingPairing: PairingRequest | null = null;
@@ -22,12 +22,12 @@ export default class StoaPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		this.addSettingTab(new StoaSettingTab(this.app, this));
+		this.addSettingTab(new StoasisSettingTab(this.app, this));
 
 		const statusEl = this.addStatusBarItem();
-		statusEl.addClass('stoa-status');
+		statusEl.addClass('stoasis-status');
 		statusEl.setText(
-			`Stoa: ${describePairingState(getPairingState(this.settings)).toLowerCase()}`,
+			`Stoasis: ${describePairingState(getPairingState(this.settings)).toLowerCase()}`,
 		);
 
 		this.registerObsidianProtocolHandler(PROTOCOL_ACTION, (params) => {

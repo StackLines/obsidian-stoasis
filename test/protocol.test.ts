@@ -92,7 +92,7 @@ describe('parsePairingParams', () => {
 			'ftp://example.test',
 			'file:///etc/hosts',
 			'data:text/plain,hello',
-			'obsidian://stoa',
+			'obsidian://stoasis',
 			'https://',
 			'notes',
 			'javascript:alert(1)',
@@ -138,7 +138,7 @@ describe('parsePairingParams', () => {
 		expect(JSON.stringify(result)).not.toContain(code);
 	});
 
-	it('uses the stoa action name', () => {
-		expect(PROTOCOL_ACTION).toBe('stoa');
+	it('uses the stoasis action name', () => {
+		expect(PROTOCOL_ACTION).toBe('stoasis');
 	});
 });

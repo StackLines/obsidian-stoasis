@@ -28,7 +28,7 @@ version (`0.1.0`, never `v0.1.0`) and must equal the version in
 11. Dry run: `npm run build`, then
     `node scripts/stage-release.mjs "$(mktemp -d)"` lists exactly `main.js`,
     `manifest.json` and `styles.css`. Copy them into a clean test vault under
-    `.obsidian/plugins/stoa/`, enable the plugin, open its settings, and
+    `.obsidian/plugins/stoasis/`, enable the plugin, open its settings, and
     confirm the status reads "not paired".
 12. After pushing the tag, the release workflow finishes and the release has
     exactly the three assets. A version with a suffix such as `-beta.1` is

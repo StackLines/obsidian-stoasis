@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { ContainerEl } from './stubs/obsidian';
-import type StoaPlugin from '../src/main';
+import type StoasisPlugin from '../src/main';
 import {
 	DEFAULT_SETTINGS,
-	StoaSettingTab,
+	StoasisSettingTab,
 	describePairingState,
 	getPairingState,
 	parseSettings,
@@ -43,8 +43,8 @@ describe('parseSettings', () => {
 
 describe('settings tab', () => {
 	function render() {
-		const plugin = { settings: { ...DEFAULT_SETTINGS } } as unknown as StoaPlugin;
-		const tab = new StoaSettingTab({} as never, plugin);
+		const plugin = { settings: { ...DEFAULT_SETTINGS } } as unknown as StoasisPlugin;
+		const tab = new StoasisSettingTab({} as never, plugin);
 		tab.display();
 		return (tab.containerEl as unknown as ContainerEl).items;
 	}
@@ -57,7 +57,7 @@ describe('settings tab', () => {
 	it('shows the network and privacy disclosure under its own heading', () => {
 		const items = render();
 		expect(items[1]).toEqual({ kind: 'heading', name: 'Network and privacy' });
-		expect(items[2]).toMatchObject({ kind: 'element', tag: 'p', cls: 'stoa-disclosure' });
+		expect(items[2]).toMatchObject({ kind: 'element', tag: 'p', cls: 'stoasis-disclosure' });
 		const text = items[2]?.text ?? '';
 		expect(text).toContain('needs an account on a compatible server');
 		expect(text).toContain('no telemetry and no self-update');
@@ -65,8 +65,8 @@ describe('settings tab', () => {
 	});
 
 	it('renders the same content when shown again', () => {
-		const plugin = { settings: { ...DEFAULT_SETTINGS } } as unknown as StoaPlugin;
-		const tab = new StoaSettingTab({} as never, plugin);
+		const plugin = { settings: { ...DEFAULT_SETTINGS } } as unknown as StoasisPlugin;
+		const tab = new StoasisSettingTab({} as never, plugin);
 		tab.display();
 		tab.display();
 		expect((tab.containerEl as unknown as ContainerEl).items).toHaveLength(3);

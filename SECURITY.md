@@ -16,7 +16,7 @@ link is checked, kept in memory until the plugin unloads, and never written to
 disk, logs or notices. Once pairing is available:
 
 - A device key received during pairing is stored only in the plugin's local
-  data file inside your vault (`.obsidian/plugins/stoa/data.json`).
+  data file inside your vault (`.obsidian/plugins/stoasis/data.json`).
 - Credentials are sent only in an `Authorization` header, never in a URL, and
   are never written to logs or notices.
 - Keep `data.json` out of any shared or cloud-synced copy of your vault.

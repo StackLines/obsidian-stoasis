@@ -94,7 +94,7 @@ describe('release assets', () => {
 	const dirs: string[] = [];
 
 	function tempDir(): string {
-		const dir = mkdtempSync(join(tmpdir(), 'stoa-test-'));
+		const dir = mkdtempSync(join(tmpdir(), 'stoasis-test-'));
 		dirs.push(dir);
 		return dir;
 	}
@@ -103,8 +103,8 @@ describe('release assets', () => {
 	function builtRoot(): string {
 		const root = tempDir();
 		writeFileSync(join(root, 'main.js'), '"use strict";');
-		writeFileSync(join(root, 'manifest.json'), JSON.stringify({ id: 'stoa' }));
-		writeFileSync(join(root, 'styles.css'), '.stoa-status {}');
+		writeFileSync(join(root, 'manifest.json'), JSON.stringify({ id: 'stoasis' }));
+		writeFileSync(join(root, 'styles.css'), '.stoasis-status {}');
 		writeFileSync(join(root, 'package.json'), '{}');
 		writeFileSync(join(root, 'main.js.map'), '{}');
 		return root;
@@ -141,7 +141,7 @@ describe('release assets', () => {
 		const vault = tempDir();
 		mkdirSync(join(vault, '.obsidian'));
 		const pluginDir = installDev(builtRoot(), vault);
-		expect(pluginDir).toBe(join(vault, '.obsidian', 'plugins', 'stoa'));
+		expect(pluginDir).toBe(join(vault, '.obsidian', 'plugins', 'stoasis'));
 		expect(readdirSync(pluginDir).sort()).toEqual(RELEASE_ASSETS);
 	});
 
@@ -153,7 +153,7 @@ describe('release assets', () => {
 		const vault = tempDir();
 		mkdirSync(join(vault, '.config'));
 		expect(installDev(builtRoot(), vault, '.config')).toBe(
-			join(vault, '.config', 'plugins', 'stoa'),
+			join(vault, '.config', 'plugins', 'stoasis'),
 		);
 	});
 });

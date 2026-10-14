@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { notices } from './stubs/obsidian';
-import StoaPlugin from '../src/main';
+import StoasisPlugin from '../src/main';
 
-async function loadedPlugin(): Promise<StoaPlugin> {
-	const plugin = new StoaPlugin({} as never, {} as never);
+async function loadedPlugin(): Promise<StoasisPlugin> {
+	const plugin = new StoasisPlugin({} as never, {} as never);
 	await plugin.onload();
 	return plugin;
 }
@@ -23,7 +23,7 @@ describe('plugin load', () => {
 			statusItems: Array<{ text: string }>;
 		};
 		expect(plugin.statusItems).toHaveLength(1);
-		expect(plugin.statusItems[0]?.text).toBe('Stoa: not paired');
+		expect(plugin.statusItems[0]?.text).toBe('Stoasis: not paired');
 	});
 
 	it('registers a settings tab and the pairing link handler', async () => {
@@ -32,7 +32,7 @@ describe('plugin load', () => {
 			protocolHandlers: Map<string, unknown>;
 		};
 		expect(plugin.settingTabs).toHaveLength(1);
-		expect([...plugin.protocolHandlers.keys()]).toEqual(['stoa']);
+		expect([...plugin.protocolHandlers.keys()]).toEqual(['stoasis']);
 	});
 
 	it('answers a valid pairing link with a notice and no network call', async () => {
@@ -45,8 +45,8 @@ describe('plugin load', () => {
 			}
 		).protocolHandlers;
 
-		handlers.get('stoa')?.({
-			action: 'stoa',
+		handlers.get('stoasis')?.({
+			action: 'stoasis',
 			server: 'https://notes.example.test',
 			code: 'abc123',
 		});
@@ -71,8 +71,8 @@ describe('plugin load', () => {
 			}
 		).protocolHandlers;
 
-		handlers.get('stoa')?.({
-			action: 'stoa',
+		handlers.get('stoasis')?.({
+			action: 'stoasis',
 			server: 'http://example.test',
 			code: 'secret-code-1',
 		});
@@ -90,11 +90,11 @@ describe('plugin load', () => {
 			plugin as unknown as {
 				protocolHandlers: Map<string, (p: Record<string, string>) => void>;
 			}
-		).protocolHandlers.get('stoa');
+		).protocolHandlers.get('stoasis');
 
-		handler?.({ action: 'stoa', server: 'https://notes.example.test', code: 'abc123' });
-		handler?.({ action: 'stoa', server: 'notes', code: 'abc123' });
-		handler?.({ action: 'stoa' });
+		handler?.({ action: 'stoasis', server: 'https://notes.example.test', code: 'abc123' });
+		handler?.({ action: 'stoasis', server: 'notes', code: 'abc123' });
+		handler?.({ action: 'stoasis' });
 
 		for (const spy of spies) {
 			expect(spy).not.toHaveBeenCalled();
@@ -102,7 +102,7 @@ describe('plugin load', () => {
 	});
 
 	it('loads stored settings through the same validation', async () => {
-		const plugin = new StoaPlugin({} as never, {} as never);
+		const plugin = new StoasisPlugin({} as never, {} as never);
 		(plugin as unknown as { storedData: unknown }).storedData = { serverUrl: 3 };
 		await plugin.onload();
 		expect(plugin.settings).toEqual({ serverUrl: '' });

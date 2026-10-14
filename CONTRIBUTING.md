@@ -14,7 +14,7 @@ npm run check      # lint, tests, build, README status and leak check
 
 To try a build in a test vault, run `npm run build`, then
 `npm run install-dev -- <path-to-vault>`, which copies `main.js`,
-`manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/stoa/`.
+`manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/stoasis/`.
 Reload Obsidian and enable the plugin. The README section *Install for
 development* has the details.
 

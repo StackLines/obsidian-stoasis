@@ -1,4 +1,4 @@
-<h1 align="center">Stoa</h1>
+<h1 align="center">Stoasis</h1>
 
 <p align="center">
   <strong>Your notes, in step.</strong><br>
@@ -7,15 +7,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/StackLines/obsidian-stoa/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/StackLines/obsidian-stoa/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/StackLines/obsidian-stoa/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/StackLines/obsidian-stoa?include_prereleases&label=release"></a>
+  <a href="https://github.com/StackLines/obsidian-stoasis/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/StackLines/obsidian-stoasis/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/StackLines/obsidian-stoasis/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/StackLines/obsidian-stoasis?include_prereleases&label=release"></a>
   <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-blue.svg"></a>
   <img alt="Early development" src="https://img.shields.io/badge/status-early%20development-orange.svg">
 </p>
 
-A *stoa* was the covered walkway of an ancient city: a place to stop, talk
-and keep walking together. This plugin is the walkway between your vault and
-your server.
+The name joins *stoa*, the covered walkway where people met to think together, with *oasis*: a shared oasis for your notes.
 
 > **Early development.** Version 0.0.1 is a foundation release. It loads,
 > shows its state and recognises pairing links, but it does not sync or tag
@@ -57,7 +55,7 @@ your server.
   only through your normal plugin update channel.
 - **Credentials.** Once pairing ships, the device key is stored in the
   plugin's local data file inside your vault,
-  `.obsidian/plugins/stoa/data.json` (or the same path under your vault's
+  `.obsidian/plugins/stoasis/data.json` (or the same path under your vault's
   config folder if you changed it). Exclude that file from any shared or
   cloud-synced copy of your vault. Version 0.0.1 stores no credentials.
 - **Desktop and mobile.** The plugin uses no desktop-only APIs.
@@ -78,9 +76,9 @@ their GitHub releases, so it works once a release has been published.
 2. Open the command palette and run
    **BRAT: Plugins: Add a beta plugin for testing (with or without version)**,
    or select **Add beta plugin** in BRAT's settings.
-3. Paste `https://github.com/StackLines/obsidian-stoa`, keep the latest
+3. Paste `https://github.com/StackLines/obsidian-stoasis`, keep the latest
    version, and select **Add plugin**.
-4. Enable **Stoa** under **Settings → Community plugins** if BRAT did not
+4. Enable **Stoasis** under **Settings → Community plugins** if BRAT did not
    enable it for you.
 
 BRAT needs read access to the repository. While the repository is private,
@@ -89,8 +87,8 @@ add a GitHub personal access token that can read it in BRAT's settings first.
 ### Manual
 
 Download `main.js`, `manifest.json` and `styles.css` from the
-[latest release](https://github.com/StackLines/obsidian-stoa/releases/latest)
-into `<vault>/.obsidian/plugins/stoa/`, reload Obsidian, then enable **Stoa**
+[latest release](https://github.com/StackLines/obsidian-stoasis/releases/latest)
+into `<vault>/.obsidian/plugins/stoasis/`, reload Obsidian, then enable **Stoasis**
 under **Settings → Community plugins**.
 
 ## Pairing
@@ -100,7 +98,7 @@ not available in 0.0.1; this is how it will work.
 
 1. In your server's console, create a pairing code for a new device.
 2. Either click the pairing link the console shows, which looks like
-   `obsidian://stoa?server=<url>&code=<code>`, or paste the server address and
+   `obsidian://stoasis?server=<url>&code=<code>`, or paste the server address and
    the code into the plugin's settings tab.
 3. The device receives its own key. You can disconnect a device at any time
    from the settings tab, which revokes that key.
@@ -159,12 +157,12 @@ Use a test vault, not the vault you rely on.
    ```
 
    This copies `main.js`, `manifest.json` and `styles.css` into
-   `<vault>/.obsidian/plugins/stoa/`, creating the folder if needed. The vault
+   `<vault>/.obsidian/plugins/stoasis/`, creating the folder if needed. The vault
    must have been opened in Obsidian once. If it uses a config folder other
    than `.obsidian`, pass that name as a second argument. Copying the three
    files by hand works just as well.
 3. In Obsidian, reload the app, turn off restricted mode under
-   **Settings → Community plugins** if it is on, and enable **Stoa**.
+   **Settings → Community plugins** if it is on, and enable **Stoasis**.
 
 After a rebuild, run `install-dev` again and reload the plugin.
 
