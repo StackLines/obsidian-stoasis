@@ -11,6 +11,10 @@ the maintainers can manage. Only the latest release is supported.
 
 ## What the plugin does with credentials
 
+Version 0.0.1 stores and sends no credentials: a pairing code from a pairing
+link is checked, kept in memory until the plugin unloads, and never written to
+disk, logs or notices. Once pairing is available:
+
 - A device key received during pairing is stored only in the plugin's local
   data file inside your vault (`.obsidian/plugins/stoa/data.json`).
 - Credentials are sent only in an `Authorization` header, never in a URL, and

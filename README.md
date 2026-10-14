@@ -21,7 +21,7 @@ your server.
 > shows its state and recognises pairing links, but it does not sync or tag
 > anything yet. See [Status](#status).
 
-## What it does
+## What it is for
 
 - **Keeps your notes in step** across devices, in real time, against a server
   you run or are given access to.
@@ -55,10 +55,12 @@ your server.
   to sync and for notes you ask to tag. Nothing is sent for other notes.
 - **No telemetry, no analytics, no ads and no self-update.** Updates arrive
   only through your normal plugin update channel.
-- **Credentials** are stored in the plugin's local data file,
-  `.obsidian/plugins/stoa/data.json`, inside your vault. Exclude that file from
-  any shared or cloud-synced copy of your vault.
-- **Works on desktop and mobile.**
+- **Credentials.** Once pairing ships, the device key is stored in the
+  plugin's local data file inside your vault,
+  `.obsidian/plugins/stoa/data.json` (or the same path under your vault's
+  config folder if you changed it). Exclude that file from any shared or
+  cloud-synced copy of your vault. Version 0.0.1 stores no credentials.
+- **Desktop and mobile.** The plugin uses no desktop-only APIs.
 
 ## Install
 
@@ -69,19 +71,27 @@ plugin is accepted.
 
 ### BRAT (for testers)
 
-1. Install the **BRAT** plugin from Obsidian's community plugins.
-2. Open the command palette and run **BRAT: Add a beta plugin for testing**.
-3. Paste `https://github.com/StackLines/obsidian-stoa` and confirm.
-4. Enable **Stoa** under **Settings → Community plugins**.
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) installs plugins from
+their GitHub releases, so it works once a release has been published.
 
-BRAT needs read access to the repository. If you were given access to a
-private copy, add a GitHub personal access token in BRAT's settings first.
+1. Install **BRAT** from Obsidian's community plugins and enable it.
+2. Open the command palette and run
+   **BRAT: Plugins: Add a beta plugin for testing (with or without version)**,
+   or select **Add beta plugin** in BRAT's settings.
+3. Paste `https://github.com/StackLines/obsidian-stoa`, keep the latest
+   version, and select **Add plugin**.
+4. Enable **Stoa** under **Settings → Community plugins** if BRAT did not
+   enable it for you.
+
+BRAT needs read access to the repository. While the repository is private,
+add a GitHub personal access token that can read it in BRAT's settings first.
 
 ### Manual
 
 Download `main.js`, `manifest.json` and `styles.css` from the
 [latest release](https://github.com/StackLines/obsidian-stoa/releases/latest)
-into `<vault>/.obsidian/plugins/stoa/`, then enable the plugin.
+into `<vault>/.obsidian/plugins/stoa/`, reload Obsidian, then enable **Stoa**
+under **Settings → Community plugins**.
 
 ## Pairing
 
@@ -104,8 +114,10 @@ Pairing links are only accepted for `https` servers (plain `http` only for
 
 What works today:
 
-- The plugin loads on desktop and mobile.
-- The settings tab and the status bar read "not paired".
+- The plugin is built for desktop and mobile; it uses no
+  desktop-only APIs.
+- The settings tab reads "not paired", and so does the status bar on desktop
+  (Obsidian has no status bar on mobile).
 - Pairing links are recognised and validated. The plugin tells you that
   pairing is not available yet and does nothing else: no network request, and
   nothing is stored.
@@ -133,6 +145,28 @@ npm run dev       # watch build into main.js
 npm test          # unit tests
 npm run check     # lint, tests, build, README status and leak check
 ```
+
+### Install for development
+
+Use a test vault, not the vault you rely on.
+
+1. Build: `npm ci && npm run build`. This writes `main.js` next to
+   `manifest.json` and `styles.css` at the repository root.
+2. Copy the three files into the vault:
+
+   ```sh
+   npm run install-dev -- /path/to/test-vault
+   ```
+
+   This copies `main.js`, `manifest.json` and `styles.css` into
+   `<vault>/.obsidian/plugins/stoa/`, creating the folder if needed. The vault
+   must have been opened in Obsidian once. If it uses a config folder other
+   than `.obsidian`, pass that name as a second argument. Copying the three
+   files by hand works just as well.
+3. In Obsidian, reload the app, turn off restricted mode under
+   **Settings → Community plugins** if it is on, and enable **Stoa**.
+
+After a rebuild, run `install-dev` again and reload the plugin.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for conventions, including how
 commits, wording and README updates are handled.
