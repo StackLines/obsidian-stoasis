@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	checkSubject,
 	parseDenylist,
+	OLD_NAME_ALLOWED_LINE,
 	scanLine,
 	scanMessage,
 	scanPath,
@@ -65,12 +66,54 @@ describe('hostnames', () => {
 			'https://example.test/path',
 			'https://notes.example.test',
 			'http://localhost:8080',
-			'https://github.com/StackLines/obsidian-stoa',
-			'obsidian://stoa?server=<url>&code=<code>',
+			'https://github.com/StackLines/obsidian-stoasis',
+			'obsidian://stoasis?server=<url>&code=<code>',
 			'ignore *.local and .local/ here',
 		]) {
 			expect(rulesFor(line)).toEqual([]);
 		}
+	});
+});
+
+describe('previous name', () => {
+	const old = 'sto' + 'a';
+
+	it('flags the standalone word, the old repository name and the old link', () => {
+		for (const line of [
+			`the ${old} plugin`,
+			`Plugin: ${old.toUpperCase()}`,
+			`https://github.com/StackLines/obsidian-${old}`,
+			`obsidian://${old}?server=<url>&code=<code>`,
+			`.obsidian/plugins/${old}/`,
+		]) {
+			expect(rulesFor(line)).toContain('old-name');
+		}
+	});
+
+	it('allows the new name and longer words', () => {
+		for (const line of [
+			`${old}sis`,
+			`obsidian-${old}sis`,
+			`obsidian://${old}sis?server=<url>&code=<code>`,
+			`${old}ge`,
+		]) {
+			expect(rulesFor(line)).toEqual([]);
+		}
+	});
+
+	it('flags the old name in tracked paths', () => {
+		expect(scanPath(`src/${old}.ts`).map((f) => f.rule)).toContain('old-name');
+	});
+
+	it('flags the old name in commit messages', () => {
+		expect(scanMessage(`docs: mention ${old}`).map((f) => f.rule)).toContain('old-name');
+	});
+
+	it('exposes the one allowed README line, which is flagged unless skipped', () => {
+		expect(OLD_NAME_ALLOWED_LINE).toContain(`*${old}*`);
+		expect(rulesFor(OLD_NAME_ALLOWED_LINE)).toContain('old-name');
+		expect(scanLine(OLD_NAME_ALLOWED_LINE, { skip: ['old-name'] })).toEqual([]);
+		expect(rulesFor(`${OLD_NAME_ALLOWED_LINE} and ${old}`)).toContain('old-name');
 	});
 });
 
@@ -102,7 +145,7 @@ describe('secrets', () => {
 	});
 
 	it('allows documented placeholders', () => {
-		expect(rulesFor('obsidian://stoa?server=<url>&code=<code>')).toEqual([]);
+		expect(rulesFor('obsidian://stoasis?server=<url>&code=<code>')).toEqual([]);
 		expect(rulesFor('Authorization: Bearer ${key}')).toEqual([]);
 	});
 

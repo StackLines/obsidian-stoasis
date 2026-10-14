@@ -137,6 +137,27 @@ function taskIdFindings(line) {
 	return found;
 }
 
+// The previous plugin name, as a standalone word (also matches the old
+// repository name and pairing-link scheme). Assembled from parts so this file
+// does not trip its own rule. The new name does not match: it continues the
+// word, so there is no boundary after the old name.
+const OLD_NAME = new RegExp(`\\b${'sto'}${'a'}\\b`, 'i');
+
+/**
+ * The single README line that may explain the name. Matched as a whole line,
+ * in README.md only.
+ */
+export const OLD_NAME_ALLOWED_LINE = [
+	'The name joins *', 'sto', 'a*, the covered walkway where people met to ',
+	'think together, with *oasis*: a shared oasis for your notes.',
+].join('');
+
+/** @returns {Finding[]} */
+function oldNameFindings(line) {
+	const match = OLD_NAME.exec(line);
+	return match ? [{ rule: 'old-name', excerpt: mask(match[0]) }] : [];
+}
+
 const SECRET_RULES = [
 	['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----/],
 	['github-token', /\bgh[pousr]_[A-Za-z0-9]{36}\b/],
@@ -204,7 +225,7 @@ function denylistFindings(text, denylist) {
  * Scans one line of text with every content rule.
  * @param {string} line
  * @param {{ denylist?: ReturnType<typeof parseDenylist>, skip?: string[] }} [options]
- *   skip: rule families to leave out ("task-id", "ip")
+ *   skip: rule families to leave out ("task-id", "ip", "old-name")
  * @returns {Finding[]}
  */
 export function scanLine(line, options = {}) {
@@ -214,6 +235,7 @@ export function scanLine(line, options = {}) {
 		...hostFindings(line),
 		...(skip.includes('task-id') ? [] : taskIdFindings(line)),
 		...secretFindings(line),
+		...(skip.includes('old-name') ? [] : oldNameFindings(line)),
 		...denylistFindings(line, denylist),
 	];
 }
@@ -341,6 +363,7 @@ export function scanPath(path, denylist = []) {
 	} else if (top === '.github' && !GITHUB_ALLOWED.some((re) => re.test(path))) {
 		findings.push({ rule: 'unexpected-github-file', excerpt: mask(path) });
 	}
+	findings.push(...oldNameFindings(path));
 	findings.push(...denylistFindings(path, denylist));
 	return findings;
 }
@@ -530,7 +553,9 @@ function scanFile(root, path, label, denylist, out, options) {
 		.toString('utf8')
 		.split(/\r?\n/)
 		.forEach((line, index) => {
-			for (const finding of scanLine(line, { denylist, ...options })) {
+			const allowed = path === 'README.md' && line === OLD_NAME_ALLOWED_LINE;
+			const skip = [...(options.skip ?? []), ...(allowed ? ['old-name'] : [])];
+			for (const finding of scanLine(line, { denylist, skip })) {
 				report(out, label, { ...finding, line: index + 1 });
 			}
 		});
