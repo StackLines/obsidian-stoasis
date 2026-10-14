@@ -1,3 +1,5 @@
+![Stoasis: a shared oasis for your notes, pictured as a starlit classical colonnade beside a luminous reflecting pool](assets/stoasis-hero.png)
+
 <h1 align="center">Stoasis</h1>
 
 <p align="center">
