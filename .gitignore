@@ -1,0 +1,63 @@
+# --- build output (Obsidian expects main.js as a release asset, not a tracked file) ---
+main.js
+*.map
+
+# --- dependencies ---
+node_modules/
+
+# --- plugin local data (settings, keys, caches; never commit) ---
+data.json
+
+# --- editors and OS ---
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# --- test and tool output ---
+coverage/
+.vitest-cache/
+*.log
+
+# --- local environment and secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# --- private working area for contributors (see CONTRIBUTING) ---
+.local/
+*.local
+*.local.*
+*.private.md
+scratch/
+tmp/
+.scratch/
+notes-private/
+
+# --- contributor instruction files and local task tracking ---
+AGENTS.md
+backlog/
+tasks/
+.tasks/
+.tasks.toml
+BACKLOG.md
+TODO.md
+PLAN.md
+.plans/
+docs/plans/
+.worktrees/
+worktrees/
+handoff*.md
+HANDOFF*.md
+report.md
+*.status
+*.inbox
+
+# --- private working copies (until documented generically) ---
+docs/server-api.md
+docs/server-contract*.md
+fixtures/private/
