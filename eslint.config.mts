@@ -52,4 +52,11 @@ export default defineConfig(
 			'obsidianmd/settings-tab/prefer-setting-definitions': 'off',
 		},
 	},
+	{
+		files: ['test/settings.test.ts'],
+		rules: {
+			// The tab still renders through display() for apps older than 1.13.
+			'@typescript-eslint/no-deprecated': 'off',
+		},
+	},
 );

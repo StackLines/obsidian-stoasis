@@ -55,8 +55,28 @@ export class Plugin {
 	}
 }
 
+/** A rendered settings row or paragraph, in the order it was added. */
+export interface RenderedItem {
+	kind: 'setting' | 'heading' | 'element';
+	tag?: string;
+	cls?: string;
+	name?: string;
+	desc?: string;
+	text?: string;
+}
+
+export class ContainerEl {
+	items: RenderedItem[] = [];
+	empty(): void {
+		this.items.length = 0;
+	}
+	createEl(tag: string, options: { cls?: string; text?: string } = {}): void {
+		this.items.push({ kind: 'element', tag, ...options });
+	}
+}
+
 export class PluginSettingTab {
-	containerEl = {};
+	containerEl = new ContainerEl();
 	constructor(
 		public app: unknown,
 		public plugin: unknown,
@@ -64,14 +84,20 @@ export class PluginSettingTab {
 }
 
 export class Setting {
-	constructor(public containerEl: unknown) {}
-	setName(): this {
+	private item: RenderedItem = { kind: 'setting' };
+	constructor(containerEl: ContainerEl) {
+		containerEl.items.push(this.item);
+	}
+	setName(name: string): this {
+		this.item.name = name;
 		return this;
 	}
-	setDesc(): this {
+	setDesc(desc: string): this {
+		this.item.desc = desc;
 		return this;
 	}
 	setHeading(): this {
+		this.item.kind = 'heading';
 		return this;
 	}
 }
