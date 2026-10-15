@@ -56,6 +56,14 @@ describe('hostnames', () => {
 		expect(rulesFor(`ssh to ${dot('nas', 'lan')} now`)).toContain('internal-hostname');
 	});
 
+	it('can leave out host names outside URLs, for minified code', () => {
+		const code = `if(${dot('t', 'local')}&&x)`;
+		expect(rulesFor(code)).toContain('internal-hostname');
+		expect(scanLine(code, { skip: ['bare-host'] })).toEqual([]);
+		const url = `fetch("https://${dot('box', 'internal')}/")`;
+		expect(scanLine(url, { skip: ['bare-host'] }).map((f) => f.rule)).toContain('internal-hostname');
+	});
+
 	it('sees the host behind user info', () => {
 		expect(rulesFor(`https://alice:pw@${dot('example', 'test')}/`)).toEqual([]);
 		expect(rulesFor(`https://alice:pw@${'buildhost'}/`)).toContain('internal-hostname');

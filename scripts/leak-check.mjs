@@ -85,8 +85,12 @@ const INTERNAL_SUFFIXES = [
 	'home.arpa',
 ];
 
-/** @returns {Finding[]} */
-function hostFindings(line) {
+/**
+ * @param {string} line
+ * @param {boolean} bare also look for host names outside URLs
+ * @returns {Finding[]}
+ */
+function hostFindings(line, bare) {
 	/** @type {Finding[]} */
 	const found = [];
 	for (const match of line.matchAll(/\bhttps?:\/\/([^\s/?#'"`<>()[\]{}\\]+)/gi)) {
@@ -105,9 +109,12 @@ function hostFindings(line) {
 			found.push({ rule: 'internal-hostname', excerpt: mask(match[0]) });
 		}
 	}
+	if (!bare) {
+		return found;
+	}
 	const suffixes = INTERNAL_SUFFIXES.map((s) => s.replace('.', '\\.')).join('|');
-	const bare = new RegExp(`(?<![\\w./*-])[a-z0-9][a-z0-9-]*(?:\\.[a-z0-9-]+)*\\.(?:${suffixes})(?![\\w-])`, 'gi');
-	for (const match of line.matchAll(bare)) {
+	const bareHost = new RegExp(`(?<![\\w./*-])[a-z0-9][a-z0-9-]*(?:\\.[a-z0-9-]+)*\\.(?:${suffixes})(?![\\w-])`, 'gi');
+	for (const match of line.matchAll(bareHost)) {
 		// Already reported as part of a URL above.
 		if (found.some((f) => f.excerpt === mask(match[0]))) {
 			continue;
@@ -225,14 +232,14 @@ function denylistFindings(text, denylist) {
  * Scans one line of text with every content rule.
  * @param {string} line
  * @param {{ denylist?: ReturnType<typeof parseDenylist>, skip?: string[] }} [options]
- *   skip: rule families to leave out ("task-id", "ip", "old-name")
+ *   skip: rule families to leave out ("task-id", "ip", "old-name", "bare-host")
  * @returns {Finding[]}
  */
 export function scanLine(line, options = {}) {
 	const { denylist = [], skip = [] } = options;
 	return [
 		...(skip.includes('ip') ? [] : ipv4Findings(line)),
-		...hostFindings(line),
+		...hostFindings(line, !skip.includes('bare-host')),
 		...(skip.includes('task-id') ? [] : taskIdFindings(line)),
 		...secretFindings(line),
 		...(skip.includes('old-name') ? [] : oldNameFindings(line)),
@@ -503,10 +510,11 @@ function run(argv) {
 		});
 	}
 
-	// The built bundle, when present (task keys and addresses are checked, but
-	// minified identifiers make the key shape meaningless there).
+	// The built bundle, when present. Addresses, URLs and the denylist are
+	// checked, but minified code makes two shapes meaningless there: task keys,
+	// and host names outside URLs, which property access resembles.
 	scanFile(root, 'main.js', 'main.js (bundle)', denylist.entries, out, {
-		skip: ['task-id'],
+		skip: ['task-id', 'bare-host'],
 	});
 
 	// Branch and tag names.
