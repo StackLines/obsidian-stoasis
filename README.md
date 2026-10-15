@@ -17,7 +17,7 @@
 
 The name joins *stoa*, the covered walkway where people met to think together, with *oasis*: a shared oasis for your notes.
 
-> **Early development.** Version 0.1.0 is the first preview that syncs. It
+> **Early development.** Version 0.1.1 is a preview that syncs. It
 > pairs with your server and keeps one folder in step with your personal
 > space, offline edits included. Tagging and sharing are not available yet.
 > See [Status](#status).
@@ -187,7 +187,7 @@ mobile too. It closes when the download is done.
 
 ## Status
 
-**Current version:** `0.1.0`
+**Current version:** `0.1.1`
 
 What works today:
 
@@ -217,7 +217,7 @@ See the [changelog](CHANGELOG.md) for release notes.
 
 1. **Foundations.** Build, release and a plugin that loads and shows its state.
 2. **Live sync.** Pairing, folders mapped to your server, real-time editing
-   and offline changes. *Version 0.1.0 covers one folder; conflict review and
+   and offline changes. *Version 0.1.1 covers one folder; conflict review and
    folder warnings follow in 0.1.x.*
 3. **Tagging.** Automatic frontmatter tags for synced and unsynced notes.
 4. **Sharing.** Shared folders with roles.

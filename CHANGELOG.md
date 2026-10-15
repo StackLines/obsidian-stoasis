@@ -5,7 +5,10 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.1] - 2026-10-15
+
+Downloads your space to a new device in one step, and fixes a note's text
+being replaced by another note's after switching files in an editor.
 
 ### Added
 
