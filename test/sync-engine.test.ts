@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { emptyEngineState, parseEngineState, SyncEngine, type EngineState } from '../src/sync/engine';
 import { FakeVault, MemoryDocSource, MemoryHub } from './helpers/memory-source';
@@ -324,6 +324,112 @@ describe('SyncEngine', () => {
 		await startB;
 		await settle(a, b);
 		expect(b.files()).toEqual({ 'Synced/Existing.md': 'server' });
+		expect(b.problems).toEqual([]);
+	});
+});
+
+describe('first start on a device new to the space', () => {
+	const COUNT = 60;
+
+	async function spaceWithNotes(): Promise<MemoryHub> {
+		const hub = new MemoryHub();
+		const a = new Device(hub);
+		await a.start();
+		for (let i = 0; i < COUNT; i++) {
+			a.vault.write(`Synced/Note ${i}.md`, `text ${i}`);
+		}
+		await settle(a);
+		await a.stop();
+		return hub;
+	}
+
+	/** Index paths removed on the server while `run` runs. */
+	async function indexDeletions(hub: MemoryHub, run: () => Promise<void>): Promise<string[]> {
+		const deleted: string[] = [];
+		const map = hub.doc(spaceDocName(SPACE_ID)).getMap('index');
+		const observer = (event: { changes: { keys: Map<string, { action: string }> } }) => {
+			for (const [key, change] of event.changes.keys) {
+				if (change.action === 'delete') {
+					deleted.push(key);
+				}
+			}
+		};
+		map.observe(observer);
+		try {
+			await run();
+		} finally {
+			map.unobserve(observer);
+		}
+		return deleted;
+	}
+
+	it('downloads every note to an empty folder and removes nothing from the space', async () => {
+		const hub = await spaceWithNotes();
+		const b = new Device(hub);
+		const deleted = await indexDeletions(hub, async () => {
+			await b.start();
+			await settle(b);
+		});
+		expect(deleted).toEqual([]);
+		expect(Object.keys(b.files())).toHaveLength(COUNT);
+		expect(b.files()['Synced/Note 7.md']).toBe('text 7');
+		expect(hub.doc(spaceDocName(SPACE_ID)).getMap('index').size).toBe(COUNT);
+		expect(b.engine.progress()).toEqual({ listed: COUNT, present: COUNT });
+		expect(b.problems).toEqual([]);
+	});
+
+	it('creates files before every note has been loaded', async () => {
+		const hub = await spaceWithNotes();
+		const b = new Device(hub);
+		const open = vi.spyOn(MemoryDocSource.prototype, 'open');
+		const opened = () => open.mock.calls.filter(([name]) => name.startsWith('note:')).length;
+		let openedAtFirstFile: number | null = null;
+		const create = b.vault.create.bind(b.vault);
+		b.vault.create = (path, text) => {
+			openedAtFirstFile ??= opened();
+			return create(path, text);
+		};
+		let openedByStart = 0;
+		try {
+			await b.start();
+			openedByStart = opened();
+		} finally {
+			open.mockRestore();
+		}
+		await settle(b);
+		expect(openedByStart).toBe(COUNT);
+		expect(openedAtFirstFile).not.toBeNull();
+		expect(openedAtFirstFile).toBeLessThan(COUNT);
+		expect(Object.keys(b.files())).toHaveLength(COUNT);
+	});
+
+	it('counts the notes on the device while they arrive', async () => {
+		const hub = await spaceWithNotes();
+		const b = new Device(hub);
+		const seen: Array<{ listed: number; present: number }> = [];
+		const create = b.vault.create.bind(b.vault);
+		b.vault.create = (path, text) => {
+			// Before this file exists: every earlier one is counted, this one not yet.
+			seen.push(b.engine.progress());
+			return create(path, text);
+		};
+		await b.start();
+		await settle(b);
+		expect(seen).toEqual(Array.from({ length: COUNT }, (_, present) => ({ listed: COUNT, present })));
+		expect(b.engine.progress()).toEqual({ listed: COUNT, present: COUNT });
+	});
+
+	it('creates a file again in its full pass when an early pass could not', async () => {
+		const hub = await spaceWithNotes();
+		const b = new Device(hub);
+		b.vault.failNext('create', 'Synced/Note 3.md');
+		const deleted = await indexDeletions(hub, async () => {
+			await b.start();
+			await settle(b);
+		});
+		expect(deleted).toEqual([]);
+		expect(b.files()['Synced/Note 3.md']).toBe('text 3');
+		expect(Object.keys(b.files())).toHaveLength(COUNT);
 		expect(b.problems).toEqual([]);
 	});
 });

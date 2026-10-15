@@ -12,6 +12,14 @@ export interface SyncSnapshot {
 	refused: number;
 	/** The first pass over the folder has finished. */
 	ready: boolean;
+	/** While the first sync of the folder brings notes to this device. */
+	download?: DownloadCounts | null;
+}
+
+/** Notes the space lists, and how many of them are files on this device. */
+export interface DownloadCounts {
+	listed: number;
+	present: number;
 }
 
 /** The status bar text: short, lower case after the name, as Obsidian's own items. */
@@ -43,13 +51,24 @@ function connectionWords(s: SyncSnapshot): string {
 		case 'connecting':
 			return 'connecting';
 		case 'online':
+			if (s.download) {
+				return `downloading ${s.download.present}/${s.download.listed}`;
+			}
 			return !s.ready || s.pending > 0 ? 'syncing' : 'synced';
 	}
 }
 
 /** A longer explanation for the settings tab and the status bar tooltip. */
 export function explainStatus(snapshot: SyncSnapshot): string {
-	const text = explainConnection(snapshot);
+	let text = explainConnection(snapshot);
+	const download = snapshot.download;
+	if (download && (snapshot.connection === 'online' || snapshot.connection === 'offline')) {
+		const counts = `${download.present} of ${download.listed} notes are on this device`;
+		text =
+			snapshot.connection === 'online'
+				? `Downloading your notes: ${counts}.`
+				: `${text} ${counts} so far.`;
+	}
 	if (snapshot.refused > 0 && (snapshot.connection === 'online' || snapshot.connection === 'offline')) {
 		return `${text} ${describeRefused(snapshot.refused)}`;
 	}
