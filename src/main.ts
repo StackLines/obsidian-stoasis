@@ -20,7 +20,7 @@ import {
 	type SettingsHost,
 	type StoasisSettings,
 } from './settings';
-import { describeStatus, explainStatus, type SyncSnapshot } from './status';
+import { describeRefused, describeStatus, explainStatus, type SyncSnapshot } from './status';
 import { EditorSync } from './sync/binding';
 import { spaceDocName, type ConnectionState } from './sync/docs';
 import { emptyEngineState, SyncEngine } from './sync/engine';
@@ -35,6 +35,8 @@ const SAVE_DELAY_MS = 2000;
 const RESCAN_DELAY_MS = 2000;
 /** How long to wait before retrying when the space could not be loaded. */
 const SPACE_RETRY_MS = 30_000;
+/** How often to ask again for the key of a disconnected device to be revoked. */
+const REVOKE_RETRY_MS = 10 * 60_000;
 
 interface Session {
 	source: HocuspocusDocSource;
@@ -53,7 +55,9 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	private saveTimer: number | null = null;
 	private rescanTimer: number | null = null;
 	private retryTimer: number | null = null;
+	private revokeTimer: number | null = null;
 	private lastConnection: ConnectionState | null = null;
+	private lastRefused = 0;
 	private incompatibility = '';
 	private unloaded = false;
 
@@ -82,7 +86,9 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			}
 			this.registerVaultEvents();
 			this.restartSync();
+			void this.retryRevocation();
 		});
+		this.revokeTimer = window.setInterval(() => void this.retryRevocation(), REVOKE_RETRY_MS);
 	}
 
 	onunload() {
@@ -91,6 +97,9 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			if (timer !== null) {
 				window.clearTimeout(timer);
 			}
+		}
+		if (this.revokeTimer !== null) {
+			window.clearInterval(this.revokeTimer);
 		}
 		// Stop the running session now, and any session a start still in
 		// progress creates once it finishes.
@@ -107,6 +116,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			configured: this.settings.folder !== '' && this.settings.syncEnabled,
 			connection: session === null ? null : session.source.state,
 			pending: session === null ? 0 : session.source.pending,
+			refused: session === null ? 0 : session.source.refused,
 			ready: session !== null && session.engine.ready,
 		};
 	}
@@ -148,17 +158,40 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	async unpair(): Promise<void> {
 		await this.stopSync();
 		const { serverUrl, deviceKey, keyId } = this.settings;
+		let revoked = true;
 		if (serverUrl !== '' && deviceKey !== '' && keyId !== '') {
-			try {
-				await new NotesApi(obsidianHttp, serverUrl, deviceKey).revokeDevice(keyId);
-			} catch {
-				// The key is forgotten here either way; the server lists it until removed there.
+			revoked = await revoke({ serverUrl, deviceKey, keyId });
+			if (!revoked) {
+				// Forgotten here, but still valid on the server: keep asking.
+				this.settings.pendingRevocation = { serverUrl, deviceKey, keyId };
 			}
 		}
 		this.forgetPairing();
 		await this.saveSettings();
 		this.updateStatus();
-		new Notice('This device is no longer paired.');
+		new Notice(
+			revoked
+				? 'This device is no longer paired.'
+				: 'This device is no longer paired, but the server could not be reached to revoke its key, ' +
+						'so the key still works there. Stoasis will keep trying; you can also remove the ' +
+						'device from your list of devices on the server.',
+		);
+	}
+
+	async retryRevocation(): Promise<boolean> {
+		const pending = this.settings.pendingRevocation;
+		if (pending === null) {
+			return true;
+		}
+		if (!(await revoke(pending))) {
+			return false;
+		}
+		if (this.settings.pendingRevocation?.keyId === pending.keyId) {
+			this.settings.pendingRevocation = null;
+			await this.saveSettings();
+		}
+		new Notice('The server revoked the key of the device you disconnected.');
+		return true;
 	}
 
 	async setFolder(folder: string, create: boolean): Promise<void> {
@@ -231,8 +264,8 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	private forgetPairing(): void {
-		const { installId, folder } = this.settings;
-		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder };
+		const { installId, folder, pendingRevocation } = this.settings;
+		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder, pendingRevocation };
 		this.incompatibility = '';
 	}
 
@@ -326,11 +359,19 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		source.onChange(() => this.updateStatus());
 		source.start();
 		this.updateStatus();
-		await engine.start();
-		if (this.session === session) {
-			this.editors.setLinker(engine);
-			this.updateStatus();
-		}
+		// Not awaited: the first start can wait for the server indefinitely, and
+		// stopping, disconnecting or choosing another folder must not wait for it.
+		void engine
+			.start()
+			.then(() => {
+				if (this.session === session && engine.ready) {
+					this.editors.setLinker(engine);
+					this.updateStatus();
+				}
+			})
+			.catch((error: unknown) => {
+				new Notice(`Stoasis could not start sync: ${error instanceof Error ? error.message : String(error)}`);
+			});
 	}
 
 	private async stopSession(): Promise<void> {
@@ -455,6 +496,10 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	private updateStatus(): void {
 		const snapshot = this.status();
+		if (snapshot.refused > this.lastRefused) {
+			new Notice(describeRefused(snapshot.refused));
+		}
+		this.lastRefused = snapshot.refused;
 		if (snapshot.connection !== this.lastConnection) {
 			this.lastConnection = snapshot.connection;
 			if (snapshot.connection === 'outdated') {
@@ -472,6 +517,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 					: explainStatus(snapshot),
 			);
 		}
+		this.settingTab?.refreshStatus();
 	}
 
 	// Storage.
@@ -495,6 +541,19 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 				void this.saveSettings();
 			}, SAVE_DELAY_MS);
 		}
+	}
+}
+
+/**
+ * Asks the server to revoke a device key. True when the key no longer works,
+ * including when the server had already removed it.
+ */
+async function revoke(key: { serverUrl: string; deviceKey: string; keyId: string }): Promise<boolean> {
+	try {
+		await new NotesApi(obsidianHttp, key.serverUrl, key.deviceKey).revokeDevice(key.keyId);
+		return true;
+	} catch (error) {
+		return error instanceof ApiError && (error.kind === 'unauthenticated' || error.kind === 'not-found');
 	}
 }
 

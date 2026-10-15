@@ -73,6 +73,7 @@ class FakeHost {
 			configured: this.settings.folder !== '' && this.settings.syncEnabled,
 			connection: null,
 			pending: 0,
+			refused: 0,
 			ready: false,
 		};
 	}
@@ -98,6 +99,10 @@ class FakeHost {
 		this.calls.push('unpair');
 		this.settings = parseSettings(null);
 		return Promise.resolve();
+	}
+	retryRevocation(): Promise<boolean> {
+		this.calls.push('retry revocation');
+		return Promise.resolve(false);
 	}
 	setFolder(folder: string, create: boolean): Promise<void> {
 		this.calls.push(`folder ${folder} ${create}`);
@@ -155,6 +160,24 @@ function paired(): FakeHost {
 }
 
 describe('settings tab', () => {
+	it('offers to retry revoking the key of a disconnected device', async () => {
+		const host = new FakeHost();
+		host.settings.pendingRevocation = {
+			serverUrl: 'https://notes.example.test',
+			deviceKey: 'old',
+			keyId: 'key-1',
+		};
+		const { setting, button } = render(host);
+		expect(setting('Old device key').desc).toContain('still works there');
+		await button('Try again').click();
+		expect(host.calls).toEqual(['retry revocation']);
+	});
+
+	it('shows no revocation row when nothing is pending', () => {
+		const { setting } = render(new FakeHost());
+		expect(() => setting('Old device key')).toThrow();
+	});
+
 	it('shows the status first, without a heading above it', () => {
 		const { items } = render(new FakeHost());
 		expect(items()[0]).toMatchObject({ kind: 'setting', name: 'Status' });

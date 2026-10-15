@@ -8,6 +8,8 @@ export interface SyncSnapshot {
 	connection: ConnectionState | null;
 	/** Documents not yet confirmed by the server. */
 	pending: number;
+	/** Notes the server refused; their changes stay on this device. */
+	refused: number;
 	/** The first pass over the folder has finished. */
 	ready: boolean;
 }
@@ -18,6 +20,13 @@ export function describeStatus(snapshot: SyncSnapshot): string {
 }
 
 function statusWords(s: SyncSnapshot): string {
+	const words = connectionWords(s);
+	return s.refused > 0 && (s.connection === 'online' || s.connection === 'offline')
+		? `${words}, ${s.refused} refused`
+		: words;
+}
+
+function connectionWords(s: SyncSnapshot): string {
 	if (!s.paired) {
 		return 'not paired';
 	}
@@ -40,6 +49,21 @@ function statusWords(s: SyncSnapshot): string {
 
 /** A longer explanation for the settings tab and the status bar tooltip. */
 export function explainStatus(snapshot: SyncSnapshot): string {
+	const text = explainConnection(snapshot);
+	if (snapshot.refused > 0 && (snapshot.connection === 'online' || snapshot.connection === 'offline')) {
+		return `${text} ${describeRefused(snapshot.refused)}`;
+	}
+	return text;
+}
+
+/** Says that the server refused some notes, and what happens to them. */
+export function describeRefused(count: number): string {
+	const notes = count === 1 ? '1 note' : `${count} notes`;
+	const them = count === 1 ? 'it' : 'them';
+	return `The server refused ${notes} in this folder. Changes to ${them} stay on this device; Stoasis asks again the next time sync starts.`;
+}
+
+function explainConnection(snapshot: SyncSnapshot): string {
 	if (!snapshot.paired) {
 		return 'This device is not paired with a server.';
 	}

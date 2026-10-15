@@ -22,6 +22,14 @@ export interface StoasisSettings {
 	installId: string;
 	/** What the sync engine remembers between sessions. */
 	sync: EngineState;
+	/** A key the server could not be told to revoke on disconnecting; retried. */
+	pendingRevocation: PendingRevocation | null;
+}
+
+export interface PendingRevocation {
+	serverUrl: string;
+	deviceKey: string;
+	keyId: string;
 }
 
 export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
@@ -36,6 +44,7 @@ export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
 	syncEnabled: false,
 	installId: '',
 	sync: emptyEngineState(),
+	pendingRevocation: null,
 };
 
 const STRING_FIELDS = [
@@ -69,7 +78,22 @@ export function parseSettings(data: unknown): StoasisSettings {
 	}
 	settings.syncEnabled = stored['syncEnabled'] === true;
 	settings.sync = parseEngineState(stored['sync']);
+	settings.pendingRevocation = parsePendingRevocation(stored['pendingRevocation']);
 	return settings;
+}
+
+function parsePendingRevocation(value: unknown): PendingRevocation | null {
+	if (typeof value !== 'object' || value === null) {
+		return null;
+	}
+	const { serverUrl, deviceKey, keyId } = value as Record<string, unknown>;
+	if (typeof serverUrl !== 'string' || typeof deviceKey !== 'string' || typeof keyId !== 'string') {
+		return null;
+	}
+	if (serverUrl === '' || deviceKey === '' || keyId === '') {
+		return null;
+	}
+	return { serverUrl, deviceKey, keyId };
 }
 
 export type PairingState = 'not-paired' | 'paired';
@@ -101,6 +125,8 @@ export interface SettingsHost extends Plugin {
 	folders(): string[];
 	pair(server: string, code: string, deviceLabel: string): Promise<boolean>;
 	unpair(): Promise<void>;
+	/** Asks the server again to revoke the key of a disconnected device. */
+	retryRevocation(): Promise<boolean>;
 	setFolder(folder: string, create: boolean): Promise<void>;
 	setSyncEnabled(enabled: boolean): Promise<void>;
 }
@@ -108,6 +134,7 @@ export interface SettingsHost extends Plugin {
 export class StoasisSettingTab extends PluginSettingTab {
 	plugin: SettingsHost;
 	private draft = { server: '', code: '', label: '' };
+	private statusSetting: Setting | null = null;
 
 	constructor(app: App, plugin: SettingsHost) {
 		super(app, plugin);
@@ -120,7 +147,10 @@ export class StoasisSettingTab extends PluginSettingTab {
 		const settings = this.plugin.settings;
 		const paired = getPairingState(settings) === 'paired';
 
-		new Setting(containerEl).setName('Status').setDesc(explainStatus(this.plugin.status()));
+		this.statusSetting = new Setting(containerEl).setName('Status').setDesc(explainStatus(this.plugin.status()));
+		if (settings.pendingRevocation !== null) {
+			this.showPendingRevocation(settings.pendingRevocation.serverUrl);
+		}
 
 		if (paired) {
 			this.showPaired();
@@ -140,6 +170,28 @@ export class StoasisSettingTab extends PluginSettingTab {
 				'it can reach your notes and nothing else on the server. ' +
 				'There is no telemetry and no self-update.',
 		});
+	}
+
+	/** Shows the current sync status again, for when it changed while the tab is open. */
+	refreshStatus(): void {
+		this.statusSetting?.setDesc(explainStatus(this.plugin.status()));
+	}
+
+	private showPendingRevocation(serverUrl: string): void {
+		new Setting(this.containerEl)
+			.setName('Old device key')
+			.setDesc(
+				`${serverUrl} could not be told to revoke the key of the device you disconnected, ` +
+					'so it still works there. Stoasis keeps trying; you can also remove the device ' +
+					'from your list of devices on the server.',
+			)
+			.addButton((button) =>
+				button.setButtonText('Try again').onClick(async () => {
+					button.setDisabled(true);
+					await this.plugin.retryRevocation();
+					this.display();
+				}),
+			);
 	}
 
 	private showPairing(): void {

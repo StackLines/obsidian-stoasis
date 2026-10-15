@@ -13,7 +13,7 @@ import {
 } from '../src/sync/paths';
 
 describe('status bar', () => {
-	const base: SyncSnapshot = { paired: true, configured: true, connection: 'online', pending: 0, ready: true };
+	const base: SyncSnapshot = { paired: true, configured: true, connection: 'online', pending: 0, refused: 0, ready: true };
 
 	it.each<[Partial<SyncSnapshot>, string]>([
 		[{ paired: false }, 'Stoasis: not paired'],
@@ -27,6 +27,8 @@ describe('status bar', () => {
 		[{ connection: 'offline', pending: 3 }, 'Stoasis: offline, 3 waiting'],
 		[{ connection: 'outdated' }, 'Stoasis: update needed'],
 		[{ connection: 'refused' }, 'Stoasis: access refused'],
+		[{ refused: 1 }, 'Stoasis: synced, 1 refused'],
+		[{ connection: 'offline', pending: 2, refused: 3 }, 'Stoasis: offline, 2 waiting, 3 refused'],
 	])('shows %o as "%s"', (change, text) => {
 		const snapshot = { ...base, ...change };
 		expect(describeStatus(snapshot)).toBe(text);
