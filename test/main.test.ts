@@ -108,7 +108,9 @@ describe('pairing link', () => {
 			personName: 'Ada',
 			spaceId: SPACE_ID,
 		});
-		expect(notices).toEqual(['Paired as Ada. Choose a folder to sync in the Stoasis settings.']);
+		expect(notices).toEqual([
+			'Paired as Ada. To get your notes on this device, open the Stoasis settings and choose "Download to this device".',
+		]);
 		expect(openedModals[0]?.isOpen).toBe(false);
 		expect(plugin.statusItems[0]?.text).toBe('Stoasis: sync off');
 	});
@@ -205,5 +207,63 @@ describe('pairing by hand', () => {
 		expect(plugin.settings).toMatchObject({ serverUrl: '', deviceKey: '', keyId: '', spaceId: '' });
 		expect(JSON.stringify(plugin.storedData)).not.toContain('device-key-1');
 		expect(plugin.statusItems[0]?.text).toBe('Stoasis: not paired');
+	});
+});
+
+describe('download to this device', () => {
+	async function pairedPlugin(app = new App()): Promise<TestPlugin> {
+		const plugin = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.1.0' } as never) as TestPlugin;
+		plugins.push(plugin);
+		await plugin.onload();
+		expect(await plugin.pair(SERVER, 'ABCD2345', 'Phone')).toBe(true);
+		return plugin;
+	}
+
+	it('creates a folder named after the space, syncs it and saves that', async () => {
+		const app = new App();
+		const plugin = await pairedPlugin(app);
+		expect(plugin.settings.spaceName).toBe('Personal');
+		expect(plugin.downloadFolder()).toBe('Personal');
+
+		await plugin.downloadToDevice();
+		expect(app.vault.folders.has('Personal')).toBe(true);
+		expect(plugin.settings).toMatchObject({ folder: 'Personal', syncEnabled: true });
+		expect(plugin.settings.sync).toEqual({ known: {}, seeded: false });
+		expect(plugin.storedData).toMatchObject({ folder: 'Personal', syncEnabled: true });
+		expect(plugin.status().configured).toBe(true);
+	});
+
+	it('picks a free name when a folder of that name already holds something', async () => {
+		const app = new App();
+		app.vault.folders.add('Personal');
+		app.vault.files.set('Personal/Old.md', 'kept');
+		app.vault.folders.add('personal 2');
+		const plugin = await pairedPlugin(app);
+		expect(plugin.downloadFolder()).toBe('Personal 3');
+		await plugin.downloadToDevice();
+		expect(plugin.settings.folder).toBe('Personal 3');
+		expect(app.vault.folders.has('Personal 3')).toBe(true);
+		expect(app.vault.files.get('Personal/Old.md')).toBe('kept');
+	});
+
+	it('uses an empty folder of that name, and avoids a file of that name', async () => {
+		const app = new App();
+		app.vault.folders.add('Personal');
+		const plugin = await pairedPlugin(app);
+		expect(plugin.downloadFolder()).toBe('Personal');
+
+		app.vault.folders.delete('Personal');
+		app.vault.files.set('Personal', 'a file without an extension');
+		expect(plugin.downloadFolder()).toBe('Personal 2');
+	});
+
+	it('falls back to the suggested name when the space has no usable name', async () => {
+		const plugin = await pairedPlugin();
+		plugin.settings.spaceName = '';
+		expect(plugin.downloadFolder()).toBe('Stoasis');
+		plugin.settings.spaceName = '..:/';
+		expect(plugin.downloadFolder()).toBe('Stoasis');
+		plugin.settings.spaceName = 'Ada\'s notes: 2026/10';
+		expect(plugin.downloadFolder()).toBe("Ada's notes 2026 10");
 	});
 });

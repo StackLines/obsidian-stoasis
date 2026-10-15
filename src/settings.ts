@@ -149,6 +149,10 @@ export interface SettingsHost extends Plugin {
 	retryRevocation(): Promise<boolean>;
 	setFolder(folder: string, create: boolean): Promise<void>;
 	setSyncEnabled(enabled: boolean): Promise<void>;
+	/** The folder `downloadToDevice` would sync: a new or empty one named after the space. */
+	downloadFolder(): string;
+	/** Creates that folder, syncs the space with it and turns sync on. */
+	downloadToDevice(): Promise<void>;
 }
 
 export class StoasisSettingTab extends PluginSettingTab {
@@ -297,25 +301,33 @@ export class StoasisSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		const settings = this.plugin.settings;
 		new Setting(containerEl).setName('Sync').setHeading();
+		const mapped = settings.folder !== '';
 
-		new Setting(containerEl)
-			.setName('Space')
-			.setDesc(
-				settings.spaceId === ''
-					? 'Your personal space is loaded when the server can be reached.'
-					: `Your personal space${settings.spaceName === '' ? '' : `, "${settings.spaceName}"`}.`,
-			);
+		if (mapped) {
+			new Setting(containerEl)
+				.setName('Space')
+				.setDesc(
+					settings.spaceId === ''
+						? 'Your personal space is loaded when the server can be reached.'
+						: `Your personal space${settings.spaceName === '' ? '' : `, "${settings.spaceName}"`}.`,
+				);
+		} else {
+			this.showDownload();
+		}
 
 		const folders = this.plugin.folders();
 		new Setting(containerEl)
-			.setName('Folder')
+			.setName(mapped ? 'Folder' : 'Or sync an existing folder')
 			.setDesc(
-				'Notes in this folder and its subfolders sync with the space. ' +
-					'Choosing another folder merges its notes into the space.',
+				mapped
+					? 'Notes in this folder and its subfolders sync with the space. ' +
+							'Choosing another folder merges its notes into the space.'
+					: 'Notes in the folder you choose and its subfolders sync with the space. ' +
+							'Notes already in that folder are added to the space and appear on your other devices.',
 			)
 			.addDropdown((dropdown) => {
 				dropdown.addOption('', 'Choose a folder');
-				if (!folders.includes(SUGGESTED_FOLDER)) {
+				if (mapped && !folders.includes(SUGGESTED_FOLDER)) {
 					dropdown.addOption(NEW_FOLDER, `New folder: ${SUGGESTED_FOLDER}`);
 				}
 				for (const folder of folders) {
@@ -331,15 +343,39 @@ export class StoasisSettingTab extends PluginSettingTab {
 				});
 			});
 
+		if (!mapped) {
+			// Nothing to switch on yet; either choice above leads here.
+			return;
+		}
 		new Setting(containerEl)
 			.setName('Sync this folder')
 			.setDesc('Keep the folder in step with the space on all your devices.')
 			.addToggle((toggle) =>
-				toggle
-					.setValue(settings.syncEnabled)
-					.setDisabled(settings.folder === '')
-					.onChange(async (value) => {
-						await this.plugin.setSyncEnabled(value);
+				toggle.setValue(settings.syncEnabled).onChange(async (value) => {
+					await this.plugin.setSyncEnabled(value);
+					this.display();
+				}),
+			);
+	}
+
+	/** The main choice on a device that syncs no folder yet: bring the space here. */
+	private showDownload(): void {
+		const settings = this.plugin.settings;
+		const space = settings.spaceName === '' ? 'Your space' : `Your space "${settings.spaceName}"`;
+		const folder = this.plugin.downloadFolder();
+		new Setting(this.containerEl)
+			.setName(`${space} is on your server`)
+			.setDesc(
+				`Download its notes into a new folder, "${folder}", on this device ` +
+					'and keep them in step with your other devices.',
+			)
+			.addButton((button) =>
+				button
+					.setButtonText('Download to this device')
+					.setCta()
+					.onClick(async () => {
+						button.setDisabled(true);
+						await this.plugin.downloadToDevice();
 						this.display();
 					}),
 			);
