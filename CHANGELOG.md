@@ -5,7 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.1] - 2026-10-15
+
+Downloads your space to a new device in one step, and fixes a note's text
+being replaced by another note's after switching files in an editor.
+
+### Added
+
+- **Download to this device** in the settings tab. On a device that syncs no
+  folder yet, one step creates a folder named after your space, downloads your
+  notes into it and turns sync on.
+- While a folder downloads the space for the first time, a notice shows how
+  many notes are on the device so far, on mobile too. The status bar and the
+  settings tab show the same count.
+
+### Changed
+
+- After pairing, the notice points to **Download to this device**. Syncing a
+  folder you already have is offered next to it, and says that notes in that
+  folder are added to the space.
+- On a first sync, files appear as notes arrive, instead of only after every
+  note has been loaded.
 
 ### Fixed
 

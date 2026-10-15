@@ -130,6 +130,15 @@ class FakeHost {
 		this.settings.syncEnabled = enabled;
 		return Promise.resolve();
 	}
+	downloadFolder(): string {
+		return this.settings.spaceName === '' ? SUGGESTED_FOLDER : `${this.settings.spaceName} 2`;
+	}
+	downloadToDevice(): Promise<void> {
+		this.calls.push('download');
+		this.settings.folder = this.downloadFolder();
+		this.settings.syncEnabled = true;
+		return Promise.resolve();
+	}
 }
 
 function render(host: FakeHost) {
@@ -230,30 +239,59 @@ describe('settings tab', () => {
 		expect(control('Server address').value).toBe('https://notes.example.test');
 	});
 
-	it('shows the pairing and the sync choices once paired', () => {
-		const { setting, control, items } = render(paired());
+	it('offers to download the space first on a device that syncs no folder yet', () => {
+		const { setting, control, items, button } = render(paired());
 		expect(setting('Server').desc).toBe('Paired with https://notes.example.test for Ada, as "Desk".');
-		expect(setting('Space').desc).toBe('Your personal space, "Personal".');
-		expect(control('Folder').options).toEqual([
+		const download = setting('Your space "Personal" is on your server');
+		expect(download.desc).toContain('new folder, "Personal 2", on this device');
+		expect(button('Download to this device').disabled).toBe(false);
+		// The download comes before the folder choice, which says what it merges.
+		const names = items().map((i) => i.name);
+		expect(names.indexOf('Your space "Personal" is on your server')).toBeLessThan(
+			names.indexOf('Or sync an existing folder'),
+		);
+		expect(setting('Or sync an existing folder').desc).toContain(
+			'Notes already in that folder are added to the space',
+		);
+		expect(control('Or sync an existing folder').options).toEqual([
 			['', 'Choose a folder'],
-			['/new', `New folder: ${SUGGESTED_FOLDER}`],
 			['Journal', 'Journal'],
 			['Work', 'Work'],
 		]);
-		expect(control('Sync this folder').disabled).toBe(true);
+		expect(names).not.toContain('Sync this folder');
+		expect(names).not.toContain('Space');
 		expect(items().some((i) => i.name === 'Pairing code')).toBe(false);
 	});
 
-	it('maps a folder, creating the suggested one on request, then turns sync on', async () => {
+	it('names the space generically while its name is not known', () => {
+		const host = paired();
+		host.settings.spaceName = '';
+		const { setting } = render(host);
+		expect(setting('Your space is on your server').desc).toContain(`"${SUGGESTED_FOLDER}"`);
+	});
+
+	it('downloads the space and turns sync on in one step', async () => {
+		const host = paired();
+		const { button, setting, control } = render(host);
+		await button('Download to this device').click();
+		expect(host.calls).toEqual(['download']);
+		expect(setting('Space').desc).toBe('Your personal space, "Personal".');
+		expect(control('Folder').value).toBe('Personal 2');
+		expect(control('Sync this folder').value).toBe(true);
+		expect(() => button('Download to this device')).toThrow();
+	});
+
+	it('syncs an existing folder, then turns sync on, then offers a new folder', async () => {
 		const host = paired();
 		const { control } = render(host);
-		await control('Folder').change('/new');
-		expect(host.calls).toEqual([`folder ${SUGGESTED_FOLDER} true`]);
-		await control('Folder').change('Work');
+		await control('Or sync an existing folder').change('Work');
+		expect(host.calls).toEqual(['folder Work false']);
+		expect(control('Sync this folder').value).toBe(false);
 		await control('Sync this folder').change(true);
-		expect(host.calls.slice(1)).toEqual(['folder Work false', 'sync true']);
-		expect(control('Sync this folder').disabled).toBe(false);
 		expect(control('Sync this folder').value).toBe(true);
+		expect(control('Folder').options).toContainEqual(['/new', `New folder: ${SUGGESTED_FOLDER}`]);
+		await control('Folder').change('/new');
+		expect(host.calls).toEqual(['folder Work false', 'sync true', `folder ${SUGGESTED_FOLDER} true`]);
 	});
 
 	it('disconnects', async () => {

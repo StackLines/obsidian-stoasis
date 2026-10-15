@@ -131,6 +131,11 @@ const BASE_KEY = 'base';
 const DIRTY_KEY = 'dirty';
 /** Kept with the space document once it holds the server's index. */
 const SEEDED_KEY = 'seeded';
+/**
+ * Notes loaded from this device's storage at a time when sync starts. Between
+ * batches the folder is reconciled, so files appear while the rest load.
+ */
+const LOAD_BATCH = 25;
 
 /**
  * Keeps one vault folder and one space in step: the space index decides which
@@ -158,6 +163,11 @@ export class SyncEngine {
 	private queue: Promise<void> = Promise.resolve();
 	private stopped = false;
 	private started = false;
+	/**
+	 * While the first pass loads notes in batches: reconciling creates files
+	 * only for notes loaded already, and leaves the others to a later pass.
+	 */
+	private loading = false;
 	private readonly stopping: Promise<void>;
 	private signalStop: () => void = () => undefined;
 	private unobserveIndex: (() => void) | null = null;
@@ -178,6 +188,18 @@ export class SyncEngine {
 	/** True once the first full pass over the folder has run. */
 	get ready(): boolean {
 		return this.started;
+	}
+
+	/** How many notes the space lists, and how many of them are files here. */
+	progress(): { listed: number; present: number } {
+		const listed = new Set(this.entries().map(([, entry]) => entry.id));
+		let present = 0;
+		for (const id of new Set(Object.values(this.state.known))) {
+			if (listed.has(id)) {
+				present++;
+			}
+		}
+		return { listed: listed.size, present };
 	}
 
 	/**
@@ -213,7 +235,39 @@ export class SyncEngine {
 		this.unobserveIndex = () => map.unobserve(onIndex);
 		this.unwatchSource = this.source.onChange(() => this.confirmNotes());
 
+		// Load the notes in batches, each its own task, and reconcile after each,
+		// so that on a device new to the space files appear while the rest load,
+		// and notes that arrive meanwhile are written without waiting for all.
+		// Reconciling early is safe: deletions still come only from what this
+		// device knew, never from a file missing on disk, and a pass creates
+		// files only for notes loaded already; the full pass below covers the rest.
+		const ids = [
+			...new Set([...this.entries().map(([, entry]) => entry.id), ...Object.values(this.state.known)]),
+		];
+		this.loading = true;
+		for (let i = 0; i < ids.length; i += LOAD_BATCH) {
+			const batch = ids.slice(i, i + LOAD_BATCH);
+			await this.enqueue(async () => {
+				// All settle before the task ends, so none still loads while another
+				// runs. A failure here is not reported: the full pass below does the
+				// same work again and reports what still fails.
+				const loads = await Promise.allSettled(batch.map((id) => this.note(id)));
+				for (const [n, load] of loads.entries()) {
+					if (load.status === 'rejected') {
+						// Not used half loaded: the full pass opens it again.
+						await this.forget(batch[n] ?? '');
+					}
+				}
+				await this.reconcile().catch(() => undefined);
+			});
+			if (this.stopped) {
+				return;
+			}
+		}
+
 		await this.enqueue(async () => {
+			this.loading = false;
+			// Opens notes listed while the batches ran, and any that failed to load.
 			for (const id of new Set(this.entries().map(([, entry]) => entry.id))) {
 				await this.note(id);
 			}
@@ -693,6 +747,10 @@ export class SyncEngine {
 			const id = entry.id;
 			if (known[rel] !== undefined || knownIds.has(id)) {
 				// Already here, or still taken by a note the passes above could not move.
+				continue;
+			}
+			if (this.loading && !this.notes.has(id)) {
+				// Not loaded yet: a later pass of the first start creates it.
 				continue;
 			}
 			const note = await this.note(id);
