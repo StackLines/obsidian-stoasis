@@ -3,7 +3,9 @@ import { ApiError, NotesApi } from './api';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
 import { PairModal } from './pair-modal';
+import { folderNameFor, freeFolderName } from './folder-name';
 import { describeApiError, pairDevice, personalSpace, PairingError } from './pairing';
+import { DownloadProgress } from './progress';
 import {
 	PROTOCOL_ACTION,
 	parseManualPairing,
@@ -15,6 +17,7 @@ import {
 import {
 	DEFAULT_SETTINGS,
 	StoasisSettingTab,
+	SUGGESTED_FOLDER,
 	addPendingRevocation,
 	getPairingState,
 	parseSettings,
@@ -40,10 +43,14 @@ const RESCAN_DELAY_MS = 2000;
 const SPACE_RETRY_MS = 30_000;
 /** How often to ask again for the key of a disconnected device to be revoked. */
 const REVOKE_RETRY_MS = 10 * 60_000;
+/** How long to wait before showing how far a download has come. */
+const DOWNLOAD_UPDATE_MS = 250;
 
 interface Session {
 	source: HocuspocusDocSource;
 	engine: SyncEngine;
+	/** Progress of the folder's first sync; null when it had one before. */
+	download: DownloadProgress | null;
 }
 
 export default class StoasisPlugin extends Plugin implements SettingsHost {
@@ -58,6 +65,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	private saveTimer: number | null = null;
 	private rescanTimer: number | null = null;
 	private retryTimer: number | null = null;
+	private downloadTimer: number | null = null;
 	private revokeTimer: number | null = null;
 	private revoking: Promise<boolean> | null = null;
 	private lastConnection: ConnectionState | null = null;
@@ -97,7 +105,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	onunload() {
 		this.unloaded = true;
-		for (const timer of [this.saveTimer, this.rescanTimer, this.retryTimer]) {
+		for (const timer of [this.saveTimer, this.rescanTimer, this.retryTimer, this.downloadTimer]) {
 			if (timer !== null) {
 				window.clearTimeout(timer);
 			}
@@ -115,6 +123,11 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	status(): SyncSnapshot {
 		const session = this.session;
+		let download = null;
+		if (session?.download?.showing === true) {
+			const counts = session.engine.progress();
+			download = counts.present < counts.listed ? counts : null;
+		}
 		return {
 			paired: getPairingState(this.settings) === 'paired',
 			configured: this.settings.folder !== '' && this.settings.syncEnabled,
@@ -122,6 +135,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			pending: session === null ? 0 : session.source.pending,
 			refused: session === null ? 0 : session.source.refused,
 			ready: session !== null && session.engine.ready,
+			download,
 		};
 	}
 
@@ -219,13 +233,41 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		if (folder === this.settings.folder) {
 			return;
 		}
+		await this.mapFolder(folder, create, this.settings.syncEnabled);
+	}
+
+	downloadFolder(): string {
+		const name = folderNameFor(this.settings.spaceName, SUGGESTED_FOLDER);
+		return freeFolderName(name, (path) => this.canDownloadInto(path));
+	}
+
+	async downloadToDevice(): Promise<void> {
+		await this.mapFolder(this.downloadFolder(), true, true);
+	}
+
+	/** Whether a new folder can be made at `path`, or it is an empty folder. */
+	private canDownloadInto(path: string): boolean {
+		const existing = this.app.vault.getAbstractFileByPath(path);
+		if (existing !== null) {
+			return existing instanceof TFolder && existing.children.length === 0;
+		}
+		// Folder names differ only in case on some systems; avoid those too.
+		const lower = path.toLowerCase();
+		return !this.folders().some((folder) => folder.toLowerCase() === lower);
+	}
+
+	/** Syncs the space with `folder`, creating it when asked, in one restart. */
+	private async mapFolder(folder: string, create: boolean, enabled: boolean): Promise<void> {
 		await this.stopSync();
 		if (create && this.app.vault.getAbstractFileByPath(folder) === null) {
 			await this.app.vault.createFolder(folder);
 		}
-		this.settings.folder = folder;
-		// What the engine knew was about the old folder.
-		this.settings.sync = emptyEngineState();
+		if (folder !== this.settings.folder) {
+			this.settings.folder = folder;
+			// What the engine knew was about the old folder.
+			this.settings.sync = emptyEngineState();
+		}
+		this.settings.syncEnabled = enabled;
 		await this.saveSettings();
 		this.restartSync();
 	}
@@ -276,7 +318,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		const who = pairing.personName === '' ? '' : ` as ${pairing.personName}`;
 		new Notice(
 			this.settings.folder === ''
-				? `Paired${who}. Choose a folder to sync in the Stoasis settings.`
+				? `Paired${who}. To get your notes on this device, open the Stoasis settings and choose "Download to this device".`
 				: `Paired${who}.`,
 		);
 		this.settingTab?.display();
@@ -371,12 +413,27 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			spaceId: settings.spaceId,
 			folder: settings.folder,
 			state: settings.sync,
-			saveState: () => this.saveSoon(),
+			saveState: () => {
+				this.saveSoon();
+				if (session.download?.active === true) {
+					this.updateStatus();
+				}
+			},
 			onProblem: (message) => new Notice(message),
 			onTracked: () => this.editors.refresh(),
 			onRelink: (path) => this.editors.relink(path),
 		});
-		const session: Session = { source, engine };
+		const session: Session = {
+			source,
+			engine,
+			// Only a folder that never finished a first sync downloads the space.
+			download: settings.sync.seeded
+				? null
+				: new DownloadProgress(
+						(message) => new Notice(message, 0),
+						(message) => new Notice(message),
+					),
+		};
 		this.session = session;
 		source.onChange(() => this.updateStatus());
 		source.start();
@@ -401,11 +458,16 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			window.clearTimeout(this.retryTimer);
 			this.retryTimer = null;
 		}
+		if (this.downloadTimer !== null) {
+			window.clearTimeout(this.downloadTimer);
+			this.downloadTimer = null;
+		}
 		const session = this.session;
 		if (session === null) {
 			return;
 		}
 		this.session = null;
+		session.download?.stop();
 		this.editors.setLinker(null);
 		await session.engine.stop();
 		await session.source.destroy();
@@ -517,6 +579,41 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	// Status.
 
 	private updateStatus(): void {
+		if (this.session?.download?.active === true) {
+			this.followDownloadSoon();
+		}
+		this.showStatus();
+	}
+
+	/**
+	 * Updates the download progress shortly, and at most a few times a second.
+	 * Waiting also skips the moment a note made here is listed in the space but
+	 * not yet recorded as a file, which is no download.
+	 */
+	private followDownloadSoon(): void {
+		if (this.downloadTimer !== null) {
+			return;
+		}
+		this.downloadTimer = window.setTimeout(() => {
+			this.downloadTimer = null;
+			const session = this.session;
+			const download = session?.download;
+			if (session === null || download?.active !== true) {
+				return;
+			}
+			const snapshot = this.status();
+			download.update({
+				counts: session.engine.progress(),
+				connection: snapshot.connection,
+				ready: snapshot.ready,
+				pending: snapshot.pending,
+				refused: snapshot.refused,
+			});
+			this.showStatus();
+		}, DOWNLOAD_UPDATE_MS);
+	}
+
+	private showStatus(): void {
 		const snapshot = this.status();
 		if (snapshot.refused > this.lastRefused) {
 			new Notice(describeRefused(snapshot.refused));

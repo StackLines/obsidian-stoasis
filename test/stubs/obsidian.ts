@@ -3,10 +3,26 @@
 // keeps a small vault in memory.
 
 export const notices: string[] = [];
+/** Every notice shown, to follow one that updates in place. */
+export const shownNotices: Notice[] = [];
 
 export class Notice {
-	constructor(message: string) {
+	message: string;
+	hidden = false;
+	constructor(
+		message: string,
+		readonly duration?: number,
+	) {
+		this.message = message;
 		notices.push(message);
+		shownNotices.push(this);
+	}
+	setMessage(message: string): this {
+		this.message = message;
+		return this;
+	}
+	hide(): void {
+		this.hidden = true;
 	}
 }
 
@@ -194,7 +210,14 @@ export class TFile extends TAbstractFile {
 		return this.path.split('.').pop() ?? '';
 	}
 }
-export class TFolder extends TAbstractFile {}
+export class TFolder extends TAbstractFile {
+	constructor(
+		path: string,
+		public children: TAbstractFile[] = [],
+	) {
+		super(path);
+	}
+}
 
 type Listener = (...args: unknown[]) => void;
 
@@ -225,7 +248,23 @@ export class Vault {
 		if (this.files.has(path)) {
 			return new TFile(path);
 		}
-		return this.folders.has(path) ? new TFolder(path) : null;
+		return this.folders.has(path) ? new TFolder(path, this.children(path)) : null;
+	}
+	/** What a folder holds directly, including folders only implied by file paths. */
+	private children(folder: string): TAbstractFile[] {
+		const prefix = `${folder}/`;
+		const names = new Map<string, TAbstractFile>();
+		for (const path of [...this.folders, ...this.files.keys()]) {
+			if (!path.startsWith(prefix)) {
+				continue;
+			}
+			const name = path.slice(prefix.length).split('/')[0] ?? '';
+			const child = prefix + name;
+			if (!names.has(child)) {
+				names.set(child, this.files.has(child) ? new TFile(child) : new TFolder(child));
+			}
+		}
+		return [...names.values()];
 	}
 	getMarkdownFiles(): TFile[] {
 		return [...this.files.keys()].filter((p) => p.endsWith('.md')).map((p) => new TFile(p));

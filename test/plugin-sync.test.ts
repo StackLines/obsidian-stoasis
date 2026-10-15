@@ -4,7 +4,7 @@ import WebSocket from 'ws';
 import StoasisPlugin from '../src/main';
 import { FakeControlPlane } from './helpers/control-plane';
 import { eventually, TestSyncServer } from './helpers/sync-server';
-import { App, setRequestHandler, TFile, type ContainerEl } from './stubs/obsidian';
+import { App, notices, setRequestHandler, shownNotices, TFile, type ContainerEl } from './stubs/obsidian';
 
 // The whole plugin, two devices, a real sync server: pairing, mapping a folder,
 // syncing both ways, going offline and the version gate.
@@ -35,6 +35,8 @@ let control: FakeControlPlane;
 const plugins: TestPlugin[] = [];
 
 beforeEach(async () => {
+	notices.length = 0;
+	shownNotices.length = 0;
 	server = new TestSyncServer();
 	await server.start();
 	control = new FakeControlPlane(server.url.replace('ws://', 'http://'));
@@ -135,4 +137,42 @@ describe('plugin sync', () => {
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		expect(b.app.vault.files.get('Notes/One.md')).toBe('one');
 	}, 30_000);
+
+	it('downloads the space to an empty device in one step, showing progress in a notice', async () => {
+		const files: Record<string, string> = {};
+		for (let i = 0; i < 30; i++) {
+			files[`Notes/Note ${i}.md`] = `text ${i}`;
+		}
+		const a = await device('ABCD2345', 'Notes', files);
+		await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+		// The first device had nothing to download.
+		expect(shownNotices.filter((n) => n.duration === 0)).toEqual([]);
+
+		const app = new App();
+		const b = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.1.0' } as never) as TestPlugin;
+		plugins.push(b);
+		await b.onload();
+		app.workspace.ready();
+		expect(await b.pair(control.server, 'EFGH2345', 'Phone')).toBe(true);
+		notices.length = 0;
+		shownNotices.length = 0;
+		// Slow enough that the download is still going on when progress is first shown.
+		server.authDelayMs = 600;
+		await b.downloadToDevice();
+		expect(b.settings).toMatchObject({ folder: 'Personal', syncEnabled: true });
+		// The status bar and the settings tab show the same count while the notice is up.
+		await eventually(() => expect(status(b)).toMatch(/^Stoasis: downloading \d+\/30$/), 8000);
+		expect(b.status().download?.listed).toBe(30);
+
+		await eventually(() => expect(app.vault.getMarkdownFiles()).toHaveLength(30), 15_000);
+		expect(app.vault.files.get('Personal/Note 12.md')).toBe('text 12');
+		await eventually(() => expect(status(b)).toBe('Stoasis: synced'), 8000);
+
+		const progress = shownNotices.filter((n) => n.duration === 0);
+		expect(progress).toHaveLength(1);
+		expect(notices[0]).toMatch(/^Stoasis: downloading notes, \d+ of 30\.$/);
+		await eventually(() => expect(progress[0]?.hidden).toBe(true), 8000);
+		expect(notices.at(-1)).toBe('Stoasis: your notes are on this device.');
+		expect(notices.filter((n) => n.startsWith('Stoasis: downloading'))).toHaveLength(1);
+	}, 40_000);
 });
