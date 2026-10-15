@@ -191,6 +191,9 @@ describe('engine', () => {
 		a.vault.write('Notes/N.md', 'remote work');
 		await settle(a);
 		const vault = new FakeVault();
+		// The first start creates files in an early pass and again in its full
+		// pass, which reports what still fails: fail both.
+		vault.failNext('create');
 		vault.failNext('create');
 		const b = await device(hub, memoryDisk(), emptyEngineState(), vault);
 		await settle(a, b);
