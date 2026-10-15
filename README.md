@@ -133,10 +133,18 @@ development).
 
 ## Sync
 
-After pairing, choose a folder in the settings tab (or let the plugin create
-one named `Stoasis`) and turn on **Sync this folder**. The folder then stays in
-step with your personal space on the server, and so with every other device
-synced to it.
+After pairing, select **Download to this device** in the settings tab. In one
+step it creates a folder named after your space, downloads your notes into it
+and turns sync on. If a folder of that name already holds something, it uses a
+numbered name such as `Personal 2`; if the space name cannot be used as a
+folder name, the folder is called `Stoasis`.
+
+To sync a folder you already have instead, choose it under **Or sync an
+existing folder** and turn on **Sync this folder**. Notes already in that
+folder are added to the space and appear on your other devices.
+
+Either way, the folder then stays in step with your personal space on the
+server, and so with every other device synced to it.
 
 - Markdown notes in the folder and its subfolders sync, including new,
   renamed, moved and deleted notes. Canvas files and attachments do not sync
@@ -168,10 +176,14 @@ synced to it.
 - Choosing a folder that already holds notes merges them into the space.
 
 The status bar shows the sync state on desktop: not paired, sync off,
-connecting, syncing, synced, offline (with the number of notes waiting to be
-sent), update needed, or access refused, followed by the number of notes the
-server refused, if any. The settings tab shows the same state with an
-explanation on every device, and follows changes while it is open.
+connecting, downloading, syncing, synced, offline (with the number of notes
+waiting to be sent), update needed, or access refused, followed by the number
+of notes the server refused, if any. The settings tab shows the same state with
+an explanation on every device, and follows changes while it is open.
+
+While a folder downloads the space for the first time, files appear as notes
+arrive, and a notice shows how many of them are on the device so far, on
+mobile too. It closes when the download is done.
 
 ## Status
 
@@ -188,7 +200,10 @@ What works today:
   included. See [Sync](#sync).
 - Sync state in the status bar on desktop (Obsidian has no status bar on
   mobile) and in the settings tab everywhere, including notes the server
-  refused.
+  refused, and a notice with the progress of a first download on every
+  device.
+- **Download to this device**: one step to bring your space to a device that
+  syncs no folder yet.
 
 What is next: side-by-side review of conflicting edits, warnings when notes
 move into or out of the synced folder, then automatic frontmatter tags.

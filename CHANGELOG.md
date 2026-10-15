@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Download to this device** in the settings tab. On a device that syncs no
+  folder yet, one step creates a folder named after your space, downloads your
+  notes into it and turns sync on.
+- While a folder downloads the space for the first time, a notice shows how
+  many notes are on the device so far, on mobile too. The status bar and the
+  settings tab show the same count.
+
+### Changed
+
+- After pairing, the notice points to **Download to this device**. Syncing a
+  folder you already have is offered next to it, and says that notes in that
+  folder are added to the space.
+- On a first sync, files appear as notes arrive, instead of only after every
+  note has been loaded.
+
 ### Fixed
 
 - Opening another note in an editor that showed a note before could replace
