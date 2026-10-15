@@ -103,6 +103,16 @@ export class EditorSync {
 		this.refresh();
 	}
 
+	/** Links the editors showing `path` again, to the note now synced there. */
+	relink(path: string): void {
+		for (const handle of this.handles) {
+			if (handle.path === path) {
+				handle.unbind();
+			}
+		}
+		this.released(path);
+	}
+
 	/** Binds every editor that is not bound yet, if its note is synced now. */
 	refresh(): void {
 		for (const handle of this.handles) {

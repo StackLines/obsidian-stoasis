@@ -58,6 +58,22 @@ describe('parseSettings', () => {
 		settings.sync.known['a.md'] = 'x';
 		expect(DEFAULT_SETTINGS.serverUrl).toBe('');
 		expect(DEFAULT_SETTINGS.sync.known).toEqual({});
+		settings.pendingRevocations.push({ serverUrl: 's', deviceKey: 'k', keyId: 'i' });
+		expect(DEFAULT_SETTINGS.pendingRevocations).toEqual([]);
+	});
+
+	it('keeps every key left to revoke, once each, including one stored the old way', () => {
+		const key = (serverUrl: string, keyId: string) => ({ serverUrl, deviceKey: `${keyId}-secret`, keyId });
+		const settings = parseSettings({
+			pendingRevocations: [key('https://a.test', 'key-1'), key('https://b.test', 'key-1'), 'junk', { keyId: 3 }],
+			pendingRevocation: key('https://a.test', 'key-2'),
+		});
+		expect(settings.pendingRevocations).toEqual([
+			key('https://a.test', 'key-1'),
+			key('https://b.test', 'key-1'),
+			key('https://a.test', 'key-2'),
+		]);
+		expect(parseSettings({ pendingRevocation: key('https://a.test', 'key-1'), pendingRevocations: [key('https://a.test', 'key-1')] }).pendingRevocations).toHaveLength(1);
 	});
 });
 
@@ -162,15 +178,24 @@ function paired(): FakeHost {
 describe('settings tab', () => {
 	it('offers to retry revoking the key of a disconnected device', async () => {
 		const host = new FakeHost();
-		host.settings.pendingRevocation = {
+		host.settings.pendingRevocations.push({
 			serverUrl: 'https://notes.example.test',
 			deviceKey: 'old',
 			keyId: 'key-1',
-		};
+		});
 		const { setting, button } = render(host);
 		expect(setting('Old device key').desc).toContain('still works there');
 		await button('Try again').click();
 		expect(host.calls).toEqual(['retry revocation']);
+	});
+
+	it('says how many keys of disconnected devices are left to revoke', () => {
+		const host = new FakeHost();
+		for (const keyId of ['key-1', 'key-2']) {
+			host.settings.pendingRevocations.push({ serverUrl: 'https://notes.example.test', deviceKey: 'old', keyId });
+		}
+		const { setting } = render(host);
+		expect(setting('Old device keys').desc).toContain('the keys of 2 devices you disconnected');
 	});
 
 	it('shows no revocation row when nothing is pending', () => {

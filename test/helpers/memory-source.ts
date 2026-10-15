@@ -181,7 +181,8 @@ export type VaultOperation = 'read' | 'create' | 'process' | 'rename' | 'trash';
  * Files in memory. Like Obsidian, every change fires an event afterwards,
  * whether the user or the plugin made it. File operations take `ioDelayMs`
  * (zero by default), and `failNext` makes one of them fail, as a full disk or
- * a locked file would.
+ * a locked file would; `failAfterRead` makes the next `process` fail after
+ * its callback ran, without changing the file.
  */
 export class FakeVault implements VaultAdapter {
 	readonly files = new Map<string, string>();
@@ -189,10 +190,16 @@ export class FakeVault implements VaultAdapter {
 	listener: VaultListener | null = null;
 	ioDelayMs = 0;
 	private readonly faults: Array<{ op: VaultOperation; path: string | null; message: string }> = [];
+	private readonly lateFaults: Array<{ path: string | null; message: string }> = [];
 
 	/** Makes the next `op` (on `path`, when given) fail with `message`. */
 	failNext(op: VaultOperation, path: string | null = null, message = 'disk write failed'): void {
 		this.faults.push({ op, path, message });
+	}
+
+	/** Makes the next `process` (on `path`, when given) fail once its callback ran. */
+	failAfterRead(path: string | null = null, message = 'disk write failed'): void {
+		this.lateFaults.push({ path, message });
 	}
 
 	listMarkdown(folder: string): string[] {
@@ -228,6 +235,11 @@ export class FakeVault implements VaultAdapter {
 			throw new Error(`No file ${path}`);
 		}
 		const next = update(current);
+		const late = this.lateFaults.findIndex((f) => f.path === null || f.path === path);
+		if (late !== -1) {
+			const [fault] = this.lateFaults.splice(late, 1);
+			throw new Error(fault?.message ?? 'failed');
+		}
 		this.files.set(path, next);
 		if (next !== current) {
 			this.emit((l) => l.fileModified(path));

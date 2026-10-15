@@ -79,6 +79,11 @@ export interface EngineOptions {
 	onProblem?: (message: string) => void;
 	/** Called when the set of synced files may have changed. */
 	onTracked?: () => void;
+	/**
+	 * Called when the file at `path` now belongs to another note: editors
+	 * linked to it must link again.
+	 */
+	onRelink?: (path: string) => void;
 }
 
 /** A link between an open editor and a note's shared text. */
@@ -366,19 +371,31 @@ export class SyncEngine {
 		await this.addLocalNote(rel);
 	}
 
-	/** Makes the file at `rel` a new note and returns its id. */
-	private async addLocalNote(rel: string): Promise<string> {
-		const text = await this.vault.read(this.path(rel));
+	/**
+	 * Makes the file at `rel` a new note and returns its id. The note holds
+	 * `text` when given, which the file does not hold yet, or else the file's.
+	 */
+	private async addLocalNote(rel: string, text?: string): Promise<string> {
+		const disk = await this.vault.read(this.path(rel));
 		const id = newNoteId();
-		// List the note in the space before opening it: the server only lets a
-		// device open a new note that its space already lists.
+		// List the note, open it and fill it in one step, with no wait between:
+		// - listed first, because the server lets a device open a new note only
+		//   once its space lists it, and the source attaches notes only after the
+		//   server confirmed the space;
+		// - filled before anything else runs, because once listed, other devices
+		//   may open and edit the note, and filling it later would replace their
+		//   edits. A new id has nothing stored on this device to wait for.
 		const map = this.requireMap();
 		map.doc?.transact(() => map.set(rel, { id, kind: 'markdown' }), ENGINE);
-		const note = await this.note(id);
-		note.open.doc.transact(() => setText(note.text, text), ENGINE);
+		const note = this.openNote(id);
+		note.open.doc.transact(() => setText(note.text, disk), ENGINE);
 		this.setBase(note);
+		if (text !== undefined && text !== disk) {
+			note.open.doc.transact(() => setText(note.text, text), ENGINE);
+		}
 		this.state.known[rel] = id;
 		this.save();
+		await this.loadNote(note);
 		return id;
 	}
 
@@ -532,8 +549,10 @@ export class SyncEngine {
 				return current;
 			}
 			if (note.base !== null && current !== note.base.text && current !== note.text.toJSON()) {
-				// Edited on disk since the last sync and not seen yet: merge first.
-				this.mergeDisk(note, current, false);
+				// Edited on disk since the last sync and not seen yet: merge first,
+				// and remember that the note holds it, so that if the write fails,
+				// the next merge starts from it rather than replay it.
+				this.mergeDisk(note, current);
 			}
 			written.base = captureBase(note.open.doc, NOTE_FIELD);
 			return written.base.text;
@@ -617,9 +636,7 @@ export class SyncEngine {
 				const unseen =
 					note.base === null || text !== note.base.text || note.dirty || note.editors > 0;
 				if (unseen) {
-					delete known[rel];
-					await this.forget(id);
-					indexed.set(await this.addLocalNote(rel), rel);
+					indexed.set(await this.keepDeleted(rel, note, text), rel);
 					this.options.onProblem?.(
 						`"${rel}" was deleted on another device, but had changes here that it had not seen; it was kept.`,
 					);
@@ -654,6 +671,30 @@ export class SyncEngine {
 			knownIds.add(id);
 		}
 		this.save();
+	}
+
+	/**
+	 * Keeps a note another device deleted, with everything it holds here, as a
+	 * new note at the same path: the server does not take a note back once its
+	 * space stopped listing it. An editor linked to the old note links to the
+	 * new one.
+	 */
+	private async keepDeleted(rel: string, note: Note, disk: string): Promise<string> {
+		if (note.editors === 0 && note.base !== null && disk !== note.text.toJSON()) {
+			// Disk edits not merged yet.
+			this.mergeDisk(note, disk);
+		}
+		// An open editor is the source of truth, and the note holds what it
+		// shows; otherwise the note holds the file and any changes not written.
+		const text = note.editors === 0 && note.base === null ? disk : note.text.toJSON();
+		const id = await this.addLocalNote(rel, text);
+		this.options.onRelink?.(this.path(rel));
+		await this.forget(note.id);
+		const added = this.notes.get(id);
+		if (added !== undefined && added.editors === 0 && text !== disk) {
+			this.scheduleWrite(added);
+		}
+		return id;
 	}
 
 	/**
@@ -821,6 +862,13 @@ export class SyncEngine {
 		if (existing !== undefined) {
 			return existing;
 		}
+		const note = this.openNote(id);
+		await this.loadNote(note);
+		return note;
+	}
+
+	/** Opens a note's document and follows its changes; load it before use. */
+	private openNote(id: string): Note {
 		const open = this.source.open(noteDocName(id));
 		const text = open.doc.getText(NOTE_FIELD);
 		const note: Note = {
@@ -845,6 +893,12 @@ export class SyncEngine {
 		text.observe(observer);
 		note.unobserve = () => text.unobserve(observer);
 		this.notes.set(id, note);
+		return note;
+	}
+
+	/** Waits for what this device stored of a note, and reads its sync state. */
+	private async loadNote(note: Note): Promise<void> {
+		const open = note.open;
 		await open.store.loaded;
 		const stored = await open.store.get(BASE_KEY);
 		if (stored instanceof Uint8Array) {
@@ -856,7 +910,6 @@ export class SyncEngine {
 		if ((await open.store.get(DIRTY_KEY)) === '1') {
 			note.dirty = true;
 		}
-		return note;
 	}
 
 	private markDirty(note: Note): void {

@@ -5,9 +5,11 @@ import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
-import { SyncEngine, emptyEngineState, type EngineState } from '../src/sync/engine';
+import { SyncEngine, emptyEngineState, type EngineOptions, type EngineState } from '../src/sync/engine';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { HocuspocusDocSource, type HocuspocusOptions } from '../src/sync/hocuspocus';
+import { EditorSync, type EditorPort } from '../src/sync/binding';
+import type { TextEdit } from '../src/sync/text';
 import { describeStatus } from '../src/status';
 import type { StoasisSettingTab } from '../src/settings';
 import StoasisPlugin from '../src/main';
@@ -44,6 +46,7 @@ async function device(
 	state = emptyEngineState(),
 	vault = new FakeVault(),
 	online = true,
+	more: Partial<EngineOptions> = {},
 ): Promise<Device> {
 	const source = new MemoryDocSource(hub, memoryStores(disk), online);
 	const problems: string[] = [];
@@ -56,6 +59,7 @@ async function device(
 		saveState: () => {},
 		writeDelayMs: 1,
 		onProblem: (problem) => problems.push(problem),
+		...more,
 	});
 	vault.listener = engine;
 	const started = engine.start();
@@ -91,6 +95,20 @@ function index(hub: MemoryHub): Record<string, { id: string }> {
 
 function sorted(vault: FakeVault): Array<[string, string]> {
 	return [...vault.files].sort(([a], [b]) => a.localeCompare(b));
+}
+
+/** An open editor showing `text`, as the binding sees it. */
+function editor(text: string): EditorPort & { shown: string } {
+	const port = {
+		shown: text,
+		text: () => port.shown,
+		applyRemote(edits: readonly TextEdit[]) {
+			for (const edit of [...edits].reverse()) {
+				port.shown = port.shown.slice(0, edit.pos) + edit.ins + port.shown.slice(edit.pos + edit.del);
+			}
+		},
+	};
+	return port;
 }
 
 describe('engine', () => {
@@ -281,6 +299,125 @@ describe('engine', () => {
 		expect(sorted(a.vault)).toEqual(expected);
 		expect(sorted(b.vault)).toEqual(expected);
 		expect(b.vault.trashed).toEqual([]);
+	});
+});
+
+describe('second review', () => {
+	it('fills a new note before other devices can open it, so their edits are kept', async () => {
+		const hub = new MemoryHub();
+		const b = await device(hub);
+		const memory = memoryStores(memoryDisk());
+		// This device is slow to load what it stored of a note.
+		const source = new MemoryDocSource(hub, (name, doc) => {
+			const store = memory(name, doc);
+			return { ...store, loaded: name.startsWith('note:') ? delay(300) : store.loaded };
+		});
+		const vault = new FakeVault();
+		const state = emptyEngineState();
+		const engine = new SyncEngine({ vault, source, spaceId: SPACE_ID, folder: 'Notes', state, saveState: () => {}, writeDelayMs: 1 });
+		vault.listener = engine;
+		cleanups.push(async () => {
+			vault.listener = null;
+			await engine.stop();
+			await source.destroy();
+		});
+		await engine.start();
+		vault.write('Notes/New.md', 'created here');
+		// The other device edits the note as soon as it appears.
+		await eventually(() => expect(b.vault.files.has('Notes/New.md')).toBe(true));
+		const seen = b.vault.files.get('Notes/New.md');
+		b.vault.write('Notes/New.md', 'created here, and peer work');
+		await b.engine.idle();
+		await delay(400);
+		await engine.idle();
+		await settle(b);
+		const name = noteDocName(state.known['New.md']!);
+		expect(hub.text(name)).toBe('created here, and peer work');
+		await eventually(() => expect(vault.files.get('Notes/New.md')).toBe('created here, and peer work'));
+		expect(b.vault.files.get('Notes/New.md')).toBe('created here, and peer work');
+		expect(seen).toBe('created here');
+	});
+
+	it('links an open editor to the note kept after another device deleted it', async () => {
+		const hub = new MemoryHub();
+		const editors = new EditorSync();
+		const a = await device(hub, memoryDisk(), emptyEngineState(), new FakeVault(), true, {
+			onRelink: (path) => editors.relink(path),
+		});
+		const b = await device(hub);
+		a.vault.write('Notes/N.md', 'original');
+		await settle(a, b);
+		editors.setLinker(a.engine);
+		const port = editor('original');
+		const handle = editors.attach(port, 'Notes/N.md');
+		await settle(a, b);
+		const originalId = a.state.known['N.md'];
+		a.source.setOnline(false);
+		port.shown = 'original UNSAVED';
+		handle.typed([{ pos: 8, del: 0, ins: ' UNSAVED' }]);
+		b.vault.remove('Notes/N.md');
+		await settle(a, b);
+		a.source.setOnline(true);
+		await settle(a, b);
+		const keptId = a.state.known['N.md']!;
+		expect(keptId).not.toBe(originalId);
+		expect(index(hub)['N.md']?.id).toBe(keptId);
+		// What the editor showed, saved or not, is the kept note.
+		expect(hub.text(noteDocName(keptId))).toBe('original UNSAVED');
+		await eventually(() => expect(b.vault.files.get('Notes/N.md')).toBe('original UNSAVED'));
+		expect(handle.bound).toBe(true);
+		// The editor follows the kept note both ways.
+		b.vault.write('Notes/N.md', 'remote replacement');
+		await settle(a, b);
+		expect(port.shown).toBe('remote replacement');
+		port.shown = 'remote replacement, typed';
+		handle.typed([{ pos: 18, del: 0, ins: ', typed' }]);
+		await settle(a, b);
+		expect(hub.text(noteDocName(keptId))).toBe('remote replacement, typed');
+		expect(b.vault.files.get('Notes/N.md')).toBe('remote replacement, typed');
+		handle.detach();
+		await settle(a, b);
+		expect(a.vault.files.get('Notes/N.md')).toBe('remote replacement, typed');
+		expect(a.vault.trashed).toEqual([]);
+	});
+
+	it('merges an outside edit once when the write fails after reading the file', async () => {
+		const hub = new MemoryHub();
+		const a = await device(hub);
+		a.vault.write('Notes/N.md', 'start');
+		await settle(a);
+		const remote = hub.doc(noteDocName(a.state.known['N.md']!)).getText('content');
+		// Edited on disk, unseen yet; the write that finds it then fails.
+		a.vault.files.set('Notes/N.md', 'start LOCAL');
+		a.vault.failAfterRead('Notes/N.md');
+		remote.insert(remote.length, ' REMOTE');
+		await settle(a);
+		expect(a.problems).toEqual(['Sync step failed: disk write failed']);
+		expect(a.vault.files.get('Notes/N.md')).toBe('start LOCAL');
+		a.engine.rescan();
+		await settle(a);
+		expect(remote.toJSON().match(/LOCAL/g)).toHaveLength(1);
+		expect(remote.toJSON().match(/REMOTE/g)).toHaveLength(1);
+		expect(a.vault.files.get('Notes/N.md')).toBe(remote.toJSON());
+	});
+
+	it('merges an outside edit once when the write fails after reading the file, across a restart', async () => {
+		const hub = new MemoryHub();
+		const a = await device(hub);
+		a.vault.write('Notes/N.md', 'start');
+		await settle(a);
+		const remote = hub.doc(noteDocName(a.state.known['N.md']!)).getText('content');
+		a.vault.files.set('Notes/N.md', 'start LOCAL');
+		a.vault.failAfterRead('Notes/N.md');
+		remote.insert(remote.length, ' REMOTE');
+		await settle(a);
+		cleanups.pop();
+		await shutDown(a);
+		const again = await device(hub, a.disk, a.state, a.vault);
+		await settle(again);
+		expect(remote.toJSON().match(/LOCAL/g)).toHaveLength(1);
+		expect(remote.toJSON().match(/REMOTE/g)).toHaveLength(1);
+		expect(again.vault.files.get('Notes/N.md')).toBe(remote.toJSON());
 	});
 });
 
@@ -502,16 +639,54 @@ describe('server refusals and limits', () => {
 	});
 
 	it('never has more notes waiting for authentication than the server allows', async () => {
-		const { source, server } = await serverSource();
-		server.authDelayMs = 250;
+		// Authentication outlasts any batch timeout, as on a slow server; a
+		// `batchTimeoutMs` option once let more notes in after it.
+		const { source, server } = await serverSource({ batchTimeoutMs: 10 } as Partial<HocuspocusOptions>);
 		source.start();
 		await source.open(SPACE).whenSynced();
+		server.authDelayMs = 250;
 		const docs = Array.from({ length: 121 }, (_, n) =>
 			source.open(noteDocName(`00000000-0000-4000-8000-${String(n).padStart(12, '0')}`)),
 		);
+		await delay(100);
+		expect(server.maxPendingAuth).toBeGreaterThan(0);
+		expect(server.maxPendingAuth).toBeLessThanOrEqual(50);
 		await eventually(() => expect(docs.every((d) => d.synced)).toBe(true), 10_000);
 		expect(server.maxPendingAuth).toBeLessThanOrEqual(50);
 		expect(server.refusals).toBe(0);
+	});
+
+	it('asks again for a refused note when sync starts again', async () => {
+		const disk = memoryDisk();
+		const { source, server } = await serverSource({ stores: memoryStores(disk) });
+		server.forbidden.add(NOTE);
+		source.start();
+		await source.open(SPACE).whenSynced();
+		const note = source.open(NOTE);
+		note.doc.getText('content').insert(0, 'kept on the device');
+		await eventually(() => expect(note.refused).toBe(true));
+		server.forbidden.delete(NOTE);
+		// A new connection in the same session does not ask again.
+		await server.drop();
+		await server.start();
+		await eventually(() => expect(source.open(SPACE).synced).toBe(true));
+		await delay(50);
+		expect(note.refused).toBe(true);
+		expect(server.text(NOTE)).toBe('');
+		await source.destroy();
+		const again = new HocuspocusDocSource({
+			url: server.url,
+			access: () => Promise.resolve('good'),
+			stores: memoryStores(disk),
+			primary: SPACE,
+			socketImpl: Socket,
+		});
+		cleanups.push(() => again.destroy());
+		again.start();
+		await again.open(SPACE).whenSynced();
+		await again.open(NOTE).whenSynced();
+		await eventually(() => expect(server.text(NOTE)).toBe('kept on the device'));
+		expect(again.refused).toBe(0);
 	});
 
 	it('attaches notes that were waiting for authentication when the connection dropped', async () => {
@@ -607,14 +782,14 @@ describe('plugin lifecycle', () => {
 		expect(control.keys.has(key)).toBe(true);
 		expect(notices).toHaveLength(1);
 		expect(notices[0]).toContain('could not be reached to revoke');
-		expect(p.settings.pendingRevocation).toEqual({ serverUrl: SERVER, deviceKey: key, keyId: 'key-1' });
+		expect(p.settings.pendingRevocations).toEqual([{ serverUrl: SERVER, deviceKey: key, keyId: 'key-1' }]);
 		// Still pending after a failed retry.
 		expect(await p.retryRevocation()).toBe(false);
-		expect(p.settings.pendingRevocation).not.toBeNull();
+		expect(p.settings.pendingRevocations).toHaveLength(1);
 		setRequestHandler(control.handle);
 		expect(await p.retryRevocation()).toBe(true);
 		expect(control.revoked).toEqual(['key-1']);
-		expect(p.settings.pendingRevocation).toBeNull();
+		expect(p.settings.pendingRevocations).toEqual([]);
 	});
 
 	it('keeps the pending revocation across a restart and a new pairing', async () => {
@@ -634,11 +809,64 @@ describe('plugin lifecycle', () => {
 			await delay(30);
 		});
 		await again.pair(control.server, 'EFGH6789', 'Review again');
-		expect(again.settings.pendingRevocation?.keyId).toBe('key-1');
+		expect(again.settings.pendingRevocations.map((k) => k.keyId)).toEqual(['key-1']);
 		app.workspace.ready();
-		await eventually(() => expect(again.settings.pendingRevocation).toBeNull());
+		await eventually(() => expect(again.settings.pendingRevocations).toEqual([]));
 		expect(control.revoked).toEqual(['key-1']);
 		expect(again.settings.keyId).toBe('key-2');
+	});
+
+	it('keeps every key left to revoke across repeated disconnects and a restart', async () => {
+		const p = await plugin();
+		await p.pair(control.server, 'ABCD2345', 'one');
+		const key1 = p.settings.deviceKey;
+		setRequestHandler(null);
+		await p.unpair();
+		control.codes.add('EFGH6789');
+		setRequestHandler(control.handle);
+		await p.pair(control.server, 'EFGH6789', 'two');
+		const key2 = p.settings.deviceKey;
+		setRequestHandler(null);
+		await p.unpair();
+		expect(p.settings.pendingRevocations.map((k) => k.keyId)).toEqual(['key-1', 'key-2']);
+		expect(await p.retryRevocation()).toBe(false);
+		// Restarted with both still pending.
+		const stored = (p as unknown as { storedData: unknown }).storedData;
+		const again = new StoasisPlugin(new App() as never, { id: 'stoasis', version: '0.1.0' } as never);
+		(again as unknown as { storedData: unknown }).storedData = stored;
+		await again.onload();
+		cleanups.push(async () => {
+			again.onunload();
+			await delay(30);
+		});
+		expect(again.settings.pendingRevocations.map((k) => k.keyId)).toEqual(['key-1', 'key-2']);
+		setRequestHandler(control.handle);
+		// Retries running at once share one attempt.
+		const results = await Promise.all([again.retryRevocation(), again.retryRevocation()]);
+		expect(results).toEqual([true, true]);
+		expect(control.keys.has(key1)).toBe(false);
+		expect(control.keys.has(key2)).toBe(false);
+		expect(control.revoked).toEqual(['key-1', 'key-2']);
+		expect(again.settings.pendingRevocations).toEqual([]);
+	});
+
+	it('keeps a key whose revocation still fails while others are revoked', async () => {
+		const p = await plugin();
+		await p.pair(control.server, 'ABCD2345', 'one');
+		setRequestHandler(null);
+		await p.unpair();
+		const other = { serverUrl: 'https://other.example.test', deviceKey: 'elsewhere', keyId: 'key-1' };
+		p.settings.pendingRevocations.push(other);
+		// Only the first server answers.
+		setRequestHandler((request) => {
+			if (!request.url.startsWith(SERVER)) {
+				throw new Error('offline');
+			}
+			return control.handle(request);
+		});
+		expect(await p.retryRevocation()).toBe(false);
+		expect(control.revoked).toEqual(['key-1']);
+		expect(p.settings.pendingRevocations).toEqual([other]);
 	});
 
 	it('treats a key the server already removed as revoked', async () => {
@@ -647,7 +875,7 @@ describe('plugin lifecycle', () => {
 		control.keys.clear();
 		notices.length = 0;
 		await p.unpair();
-		expect(p.settings.pendingRevocation).toBeNull();
+		expect(p.settings.pendingRevocations).toEqual([]);
 		expect(notices).toEqual(['This device is no longer paired.']);
 	});
 });
@@ -685,23 +913,29 @@ describe('settings status', () => {
 });
 
 describe('two devices through a sync server', () => {
-	async function serverDevice(server: TestSyncServer) {
+	/** A device; with `slowLoadMs`, it takes that long to load what it stored of a note. */
+	async function serverDevice(server: TestSyncServer, slowLoadMs = 0) {
+		const memory = memoryStores(memoryDisk());
 		const source = new HocuspocusDocSource({
 			url: server.url,
 			access: () => Promise.resolve('good'),
-			stores: memoryStores(memoryDisk()),
+			stores: (name, doc) => {
+				const store = memory(name, doc);
+				return { ...store, loaded: slowLoadMs > 0 && name.startsWith('note:') ? delay(slowLoadMs) : store.loaded };
+			},
 			primary: SPACE,
 			socketImpl: Socket,
 			minRetryMs: 10,
 			maxRetryMs: 20,
 		});
 		const vault = new FakeVault();
+		const state = emptyEngineState();
 		const engine = new SyncEngine({
 			vault,
 			source,
 			spaceId: SPACE_ID,
 			folder: 'Notes',
-			state: emptyEngineState(),
+			state,
 			saveState: () => {},
 			writeDelayMs: 1,
 		});
@@ -713,8 +947,32 @@ describe('two devices through a sync server', () => {
 		});
 		source.start();
 		await engine.start();
-		return { source, engine, vault };
+		return { source, engine, vault, state };
 	}
+
+	it('keeps edits another device makes to a new note while this device loads it', async () => {
+		const server = new TestSyncServer();
+		server.requireListing = true;
+		await server.start();
+		cleanups.push(() => server.stop());
+		const a = await serverDevice(server, 400);
+		const b = await serverDevice(server);
+		a.vault.write('Notes/New.md', 'created here');
+		// The other device edits the note as soon as it appears.
+		await eventually(() => expect(b.vault.files.has('Notes/New.md')).toBe(true));
+		const seen = b.vault.files.get('Notes/New.md');
+		b.vault.write('Notes/New.md', 'created here, and peer work');
+		const name = noteDocName(b.state.known['New.md']!);
+		await eventually(() => expect(server.text(name)).toBe('created here, and peer work'));
+		await delay(500);
+		await a.engine.idle();
+		await b.engine.idle();
+		expect(server.text(name)).toBe('created here, and peer work');
+		await eventually(() => expect(a.vault.files.get('Notes/New.md')).toBe('created here, and peer work'));
+		expect(b.vault.files.get('Notes/New.md')).toBe('created here, and peer work');
+		expect(seen).toBe('created here');
+		expect(server.refusals).toBe(0);
+	});
 
 	it('merges edits both devices made while the server was down', async () => {
 		const server = new TestSyncServer();

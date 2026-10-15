@@ -15,8 +15,11 @@ import {
 import {
 	DEFAULT_SETTINGS,
 	StoasisSettingTab,
+	addPendingRevocation,
 	getPairingState,
 	parseSettings,
+	sameKey,
+	type PendingRevocation,
 	type SettingsHost,
 	type StoasisSettings,
 } from './settings';
@@ -56,6 +59,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	private rescanTimer: number | null = null;
 	private retryTimer: number | null = null;
 	private revokeTimer: number | null = null;
+	private revoking: Promise<boolean> | null = null;
 	private lastConnection: ConnectionState | null = null;
 	private lastRefused = 0;
 	private incompatibility = '';
@@ -163,7 +167,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			revoked = await revoke({ serverUrl, deviceKey, keyId });
 			if (!revoked) {
 				// Forgotten here, but still valid on the server: keep asking.
-				this.settings.pendingRevocation = { serverUrl, deviceKey, keyId };
+				addPendingRevocation(this.settings.pendingRevocations, { serverUrl, deviceKey, keyId });
 			}
 		}
 		this.forgetPairing();
@@ -178,20 +182,37 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		);
 	}
 
-	async retryRevocation(): Promise<boolean> {
-		const pending = this.settings.pendingRevocation;
-		if (pending === null) {
-			return true;
+	/**
+	 * Asks the server again to revoke the keys of disconnected devices. True
+	 * when none is left to revoke. Calls made while one runs share it.
+	 */
+	retryRevocation(): Promise<boolean> {
+		this.revoking ??= this.revokePending().finally(() => {
+			this.revoking = null;
+		});
+		return this.revoking;
+	}
+
+	private async revokePending(): Promise<boolean> {
+		const revoked: PendingRevocation[] = [];
+		for (const pending of [...this.settings.pendingRevocations]) {
+			if (await revoke(pending)) {
+				revoked.push(pending);
+			}
 		}
-		if (!(await revoke(pending))) {
-			return false;
-		}
-		if (this.settings.pendingRevocation?.keyId === pending.keyId) {
-			this.settings.pendingRevocation = null;
+		if (revoked.length > 0) {
+			// Keys added meanwhile stay.
+			this.settings.pendingRevocations = this.settings.pendingRevocations.filter(
+				(key) => !revoked.some((done) => sameKey(done, key)),
+			);
 			await this.saveSettings();
+			new Notice(
+				revoked.length === 1
+					? 'The server revoked the key of the device you disconnected.'
+					: `The server revoked the keys of ${revoked.length} devices you disconnected.`,
+			);
 		}
-		new Notice('The server revoked the key of the device you disconnected.');
-		return true;
+		return this.settings.pendingRevocations.length === 0;
 	}
 
 	async setFolder(folder: string, create: boolean): Promise<void> {
@@ -264,8 +285,8 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	private forgetPairing(): void {
-		const { installId, folder, pendingRevocation } = this.settings;
-		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder, pendingRevocation };
+		const { installId, folder, pendingRevocations } = this.settings;
+		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder, pendingRevocations };
 		this.incompatibility = '';
 	}
 
@@ -353,6 +374,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			saveState: () => this.saveSoon(),
 			onProblem: (message) => new Notice(message),
 			onTracked: () => this.editors.refresh(),
+			onRelink: (path) => this.editors.relink(path),
 		});
 		const session: Session = { source, engine };
 		this.session = session;

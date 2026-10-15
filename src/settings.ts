@@ -22,8 +22,8 @@ export interface StoasisSettings {
 	installId: string;
 	/** What the sync engine remembers between sessions. */
 	sync: EngineState;
-	/** A key the server could not be told to revoke on disconnecting; retried. */
-	pendingRevocation: PendingRevocation | null;
+	/** Keys the server could not be told to revoke on disconnecting; retried. */
+	pendingRevocations: PendingRevocation[];
 }
 
 export interface PendingRevocation {
@@ -44,7 +44,7 @@ export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
 	syncEnabled: false,
 	installId: '',
 	sync: emptyEngineState(),
-	pendingRevocation: null,
+	pendingRevocations: [],
 };
 
 const STRING_FIELDS = [
@@ -65,7 +65,7 @@ const STRING_FIELDS = [
  * plugin.
  */
 export function parseSettings(data: unknown): StoasisSettings {
-	const settings: StoasisSettings = { ...DEFAULT_SETTINGS, sync: emptyEngineState() };
+	const settings: StoasisSettings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), pendingRevocations: [] };
 	if (typeof data !== 'object' || data === null) {
 		return settings;
 	}
@@ -78,8 +78,28 @@ export function parseSettings(data: unknown): StoasisSettings {
 	}
 	settings.syncEnabled = stored['syncEnabled'] === true;
 	settings.sync = parseEngineState(stored['sync']);
-	settings.pendingRevocation = parsePendingRevocation(stored['pendingRevocation']);
+	const list = stored['pendingRevocations'];
+	// Version 0.1.0 before its release kept one key, as `pendingRevocation`.
+	const values: unknown[] = Array.isArray(list) ? [...(list as unknown[])] : [];
+	for (const value of [...values, stored['pendingRevocation']]) {
+		const pending = parsePendingRevocation(value);
+		if (pending !== null) {
+			addPendingRevocation(settings.pendingRevocations, pending);
+		}
+	}
 	return settings;
+}
+
+/** Whether two pending revocations are for the same key. */
+export function sameKey(a: PendingRevocation, b: PendingRevocation): boolean {
+	return a.serverUrl === b.serverUrl && a.keyId === b.keyId;
+}
+
+/** Adds a key to revoke to `list`, unless it is there already. */
+export function addPendingRevocation(list: PendingRevocation[], pending: PendingRevocation): void {
+	if (!list.some((other) => sameKey(other, pending))) {
+		list.push(pending);
+	}
 }
 
 function parsePendingRevocation(value: unknown): PendingRevocation | null {
@@ -148,8 +168,8 @@ export class StoasisSettingTab extends PluginSettingTab {
 		const paired = getPairingState(settings) === 'paired';
 
 		this.statusSetting = new Setting(containerEl).setName('Status').setDesc(explainStatus(this.plugin.status()));
-		if (settings.pendingRevocation !== null) {
-			this.showPendingRevocation(settings.pendingRevocation.serverUrl);
+		if (settings.pendingRevocations.length > 0) {
+			this.showPendingRevocations(settings.pendingRevocations);
 		}
 
 		if (paired) {
@@ -177,13 +197,18 @@ export class StoasisSettingTab extends PluginSettingTab {
 		this.statusSetting?.setDesc(explainStatus(this.plugin.status()));
 	}
 
-	private showPendingRevocation(serverUrl: string): void {
+	private showPendingRevocations(pending: readonly PendingRevocation[]): void {
+		const servers = [...new Set(pending.map((key) => key.serverUrl))].join(', ');
+		const what =
+			pending.length === 1
+				? `${servers} could not be told to revoke the key of the device you disconnected, so it still works there.`
+				: `${servers} could not be told to revoke the keys of ${pending.length} devices you ` +
+					'disconnected, so they still work there.';
 		new Setting(this.containerEl)
-			.setName('Old device key')
+			.setName(pending.length === 1 ? 'Old device key' : 'Old device keys')
 			.setDesc(
-				`${serverUrl} could not be told to revoke the key of the device you disconnected, ` +
-					'so it still works there. Stoasis keeps trying; you can also remove the device ' +
-					'from your list of devices on the server.',
+				`${what} Stoasis keeps trying; you can also remove ` +
+					`${pending.length === 1 ? 'the device' : 'them'} from your list of devices on the server.`,
 			)
 			.addButton((button) =>
 				button.setButtonText('Try again').onClick(async () => {
