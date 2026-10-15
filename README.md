@@ -114,7 +114,11 @@ Pairing connects one device to your account on a compatible server.
    and lowercase letters in a typed code are fine.
 3. The device receives its own key. You can disconnect it at any time from
    the settings tab, which asks the server to revoke that key and forgets
-   it on the device.
+   it on the device. If the server cannot be reached at that moment, the
+   plugin says so: the key still works on the server until it is revoked.
+   The plugin keeps asking the server to revoke it (when Obsidian starts,
+   every ten minutes, and from **Try again** in the settings tab), and you
+   can also remove the device from your server's list of devices.
 
 Before pairing, and each time sync connects, the plugin checks that the server
 supports this plugin version. If the server needs a newer version, the plugin
@@ -136,6 +140,19 @@ synced to it.
   yet.
 - Open notes update as others type. Edits made while offline are kept on the
   device and merged when the connection returns.
+- A note deleted on another device while this device had changes to it that
+  the server had not received is kept here, and synced again as a note at the
+  same path, with a notice. Notes without such changes are moved to the trash.
+- When two devices rename the same note differently while offline, both end
+  up with one of the two names (the one that sorts first), and the note keeps
+  its text and edits from both.
+- A note the server refuses to sync (for example after a change of access on
+  the server) is asked for once more with a fresh sync token. If it is refused
+  again, its changes stay on the device, the plugin shows a notice, and the
+  status counts it as refused until sync next starts.
+- If the device's local sync data is lost (for example after clearing the
+  app's storage), the plugin changes no files in the folder until it has
+  reached the server again.
 - A note changed outside Obsidian, for example by another app, is merged with
   edits that arrived from other devices meanwhile, rather than replacing them.
 - When two devices create a note at the same path, or a note appears where a
@@ -147,8 +164,9 @@ synced to it.
 
 The status bar shows the sync state on desktop: not paired, sync off,
 connecting, syncing, synced, offline (with the number of notes waiting to be
-sent), update needed, or access refused. The settings tab shows the same state
-with an explanation, on every device.
+sent), update needed, or access refused, followed by the number of notes the
+server refused, if any. The settings tab shows the same state with an
+explanation on every device, and follows changes while it is open.
 
 ## Status
 
@@ -159,12 +177,13 @@ What works today:
 - The plugin is built for desktop and mobile; it uses no desktop-only APIs.
   It needs Obsidian 1.6.6 or later.
 - Pairing by link or by typed code, and disconnecting, which revokes the
-  device key.
+  device key, or says it could not and keeps trying.
 - The version check: a server that needs a newer plugin is not synced with.
 - Two-way live sync of one folder with your personal space, offline edits
   included. See [Sync](#sync).
 - Sync state in the status bar on desktop (Obsidian has no status bar on
-  mobile) and in the settings tab everywhere.
+  mobile) and in the settings tab everywhere, including notes the server
+  refused.
 
 What is next: side-by-side review of conflicting edits, warnings when notes
 move into or out of the synced folder, then automatic frontmatter tags.

@@ -46,9 +46,21 @@ plugin stops and asks you to update.
 
 Sync runs over one WebSocket per device, `wss://<server>/notes/sync`, shared
 by all documents, using the Hocuspocus protocol for Yjs documents. Each
-document authenticates with the current sync token. If the server refuses a
-document, the plugin fetches a fresh token and tries once more before
-reporting the refusal.
+document authenticates with the current sync token.
+
+The space document is opened first. Notes are opened only once the space is
+synced and the server has confirmed every change to it, so a new note is
+already listed in the space when it authenticates. At most 40 notes wait for
+authentication at a time, below the server's limit of documents pending on
+one connection.
+
+If the server refuses the space, the plugin reconnects with a fresh token
+once; refused again, it stops and reports that the device lost access. If the
+server refuses a note, the plugin authenticates it once more on the same
+connection with a fresh token. Refused again, the note is left alone for the
+rest of the session: its changes stay on the device and the plugin reports it
+as refused. After three refusals on one connection the plugin opens a new
+connection rather than reach the server's limit of refusals per connection.
 
 A space is a Yjs document named `space:<space id>`. Its map `index` maps a
 note's path inside the synced folder (relative, with `/` separators) to
@@ -57,7 +69,11 @@ note's path inside the synced folder (relative, with `/` separators) to
 ids as random version 4 UUIDs.
 
 Renaming a note changes only the index; deleting one removes it from the
-index. Only Markdown notes are synced; canvas files and attachments are not.
+index. If concurrent renames leave one note id at several paths, clients keep
+the path that sorts first and remove the others. A client that had changes
+to a note the server had not yet confirmed when another device deleted it
+lists the note again rather than delete it. Only Markdown notes are synced;
+canvas files and attachments are not.
 
 Every document is also kept in the app's local database on the device, so it
 can be edited offline and merged when the connection returns.
