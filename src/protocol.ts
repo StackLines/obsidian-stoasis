@@ -83,3 +83,44 @@ function normaliseServer(raw: string): ServerResult {
 
 	return { ok: true, address: url.origin + url.pathname.replace(/\/+$/, '') };
 }
+
+/** Characters a pairing code is made of, once normalised. */
+const PAIRING_CODE_ALPHABET = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]+$/;
+
+/**
+ * Normalises a pairing code the way the server compares it: case, spaces and
+ * dashes do not matter. Returns null when the result cannot be a valid code,
+ * so an obvious typo is caught without a network request.
+ */
+export function normalisePairingCode(raw: string): string | null {
+	const code = raw.replace(/[\s-]+/g, '').toUpperCase();
+	if (code === '' || code.length > MAX_CODE_LENGTH || !PAIRING_CODE_ALPHABET.test(code)) {
+		return null;
+	}
+	return code;
+}
+
+/**
+ * Validates a server address and code typed in by hand, with the same rules
+ * as a pairing link. The code may be typed with spaces, dashes or lower case.
+ */
+export function parseManualPairing(server: string, code: string): PairingParseResult {
+	if (code.trim() === '') {
+		return parsePairingParams({ server, code: '' });
+	}
+	const normal = normalisePairingCode(code);
+	if (normal === null) {
+		return server.trim() === ''
+			? { ok: false, reason: 'missing-server' }
+			: { ok: false, reason: 'invalid-code' };
+	}
+	return parsePairingParams({ server, code: normal });
+}
+
+/** Address of the sync socket for a server address from pairing. */
+export function syncSocketUrl(server: string): string {
+	const url = new URL(server);
+	url.protocol = url.protocol === 'http:' ? 'ws:' : 'wss:';
+	url.pathname = url.pathname.replace(/\/+$/, '') + '/notes/sync';
+	return url.toString();
+}

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { PROTOCOL_ACTION, parsePairingParams } from '../src/protocol';
+import {
+	PROTOCOL_ACTION,
+	normalisePairingCode,
+	parseManualPairing,
+	parsePairingParams,
+	syncSocketUrl,
+} from '../src/protocol';
 
 describe('parsePairingParams', () => {
 	it('accepts an https server and a code', () => {
@@ -140,5 +146,48 @@ describe('parsePairingParams', () => {
 
 	it('uses the stoasis action name', () => {
 		expect(PROTOCOL_ACTION).toBe('stoasis');
+	});
+});
+
+describe('parseManualPairing', () => {
+	it('accepts a code typed with spaces, dashes or lower case', () => {
+		expect(parseManualPairing(' https://notes.example.test/ ', ' abcd-23 45 ')).toEqual({
+			ok: true,
+			request: { server: 'https://notes.example.test', code: 'ABCD2345' },
+		});
+	});
+
+	it('names what is missing or wrong', () => {
+		expect(parseManualPairing('', 'ABCD2345')).toEqual({ ok: false, reason: 'missing-server' });
+		expect(parseManualPairing('https://notes.example.test', ' ')).toEqual({ ok: false, reason: 'missing-code' });
+		expect(parseManualPairing('https://notes.example.test', 'O0I1')).toEqual({ ok: false, reason: 'invalid-code' });
+		expect(parseManualPairing('http://notes.example.test', 'ABCD2345')).toEqual({
+			ok: false,
+			reason: 'insecure-server',
+		});
+	});
+});
+
+describe('normalisePairingCode', () => {
+	it('ignores case, spaces and dashes', () => {
+		expect(normalisePairingCode('abcd-2345')).toBe('ABCD2345');
+		expect(normalisePairingCode(' AB CD\t23-45 ')).toBe('ABCD2345');
+	});
+
+	it('rejects characters a code never contains', () => {
+		for (const code of ['', ' - ', 'ABCD0', 'ABCDO', 'ABCDI', 'ABCD1', 'ABCDL', 'ABC!', 'ÄBCD']) {
+			expect(normalisePairingCode(code)).toBeNull();
+		}
+	});
+});
+
+describe('syncSocketUrl', () => {
+	it('uses a secure socket for an https server', () => {
+		expect(syncSocketUrl('https://notes.example.test')).toBe('wss://notes.example.test/notes/sync');
+	});
+
+	it('keeps a path prefix and allows plain sockets for local development', () => {
+		expect(syncSocketUrl('https://example.test/brain')).toBe('wss://example.test/brain/notes/sync');
+		expect(syncSocketUrl('http://localhost:8080')).toBe('ws://localhost:8080/notes/sync');
 	});
 });
