@@ -15,14 +15,16 @@ compatible server.
 - Pairing with your server, by opening the pairing link from your server's
   console or by typing the server address and pairing code in the settings
   tab. Disconnecting asks the server to revoke the device key; if the server
-  cannot be reached, the plugin says so and keeps trying.
+  cannot be reached, the plugin says so and keeps trying, for every key left
+  unrevoked this way.
 - Version check: the plugin does not pair or sync with a server that needs a
   newer plugin version, and says so.
 - Two-way live sync of one vault folder with your personal space, including
   new, renamed, moved and deleted Markdown notes.
 - Offline editing: synced notes are kept on the device, and offline edits are
   merged when the connection returns. A note deleted elsewhere while this
-  device had unsent changes to it is kept.
+  device had unsent changes to it is kept, together with an open editor's
+  unsaved text.
 - Edits made to a synced note outside Obsidian are merged with edits from
   other devices instead of replacing them.
 - Conflict copies when two devices create a note at the same path. Two

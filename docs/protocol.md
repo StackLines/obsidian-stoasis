@@ -50,7 +50,8 @@ document authenticates with the current sync token.
 
 The space document is opened first. Notes are opened only once the space is
 synced and the server has confirmed every change to it, so a new note is
-already listed in the space when it authenticates. At most 40 notes wait for
+already listed in the space when it authenticates. A client lists a new note
+and fills it with its text in one step, before another device can open it. At most 40 notes wait for
 authentication at a time, below the server's limit of documents pending on
 one connection.
 
@@ -72,7 +73,9 @@ Renaming a note changes only the index; deleting one removes it from the
 index. If concurrent renames leave one note id at several paths, clients keep
 the path that sorts first and remove the others. A client that had changes
 to a note the server had not yet confirmed when another device deleted it
-lists the note again rather than delete it. Only Markdown notes are synced;
+keeps it rather than delete it: it lists the note's current text again under
+a new note id at the same path, since a server need not accept a note id
+that its space stopped listing. Only Markdown notes are synced;
 canvas files and attachments are not.
 
 Every document is also kept in the app's local database on the device, so it

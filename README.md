@@ -116,9 +116,12 @@ Pairing connects one device to your account on a compatible server.
    the settings tab, which asks the server to revoke that key and forgets
    it on the device. If the server cannot be reached at that moment, the
    plugin says so: the key still works on the server until it is revoked.
-   The plugin keeps asking the server to revoke it (when Obsidian starts,
-   every ten minutes, and from **Try again** in the settings tab), and you
-   can also remove the device from your server's list of devices.
+   The plugin then keeps the key in its data, for that purpose only, and
+   keeps asking the server to revoke it (when Obsidian starts, every ten
+   minutes, and from **Try again** in the settings tab); it forgets the key
+   once the server revoked it. Each key left this way is kept until then,
+   even if you pair and disconnect again. You can also remove the device
+   from your server's list of devices.
 
 Before pairing, and each time sync connects, the plugin checks that the server
 supports this plugin version. If the server needs a newer version, the plugin
@@ -141,8 +144,10 @@ synced to it.
 - Open notes update as others type. Edits made while offline are kept on the
   device and merged when the connection returns.
 - A note deleted on another device while this device had changes to it that
-  the server had not received is kept here, and synced again as a note at the
-  same path, with a notice. Notes without such changes are moved to the trash.
+  the server had not received is kept here, and synced again as a new note at
+  the same path, with a notice. It holds everything the note held here,
+  including text typed in an open editor and not saved yet, and that editor
+  stays in sync with it. Notes without such changes are moved to the trash.
 - When two devices rename the same note differently while offline, both end
   up with one of the two names (the one that sorts first), and the note keeps
   its text and edits from both.
