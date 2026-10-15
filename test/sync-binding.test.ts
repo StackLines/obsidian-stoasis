@@ -41,6 +41,8 @@ class TestEditor implements EditorPort {
 
 class TestLinker {
 	readonly docs = new Map<string, Y.Doc>();
+	/** Files on disk; a note owns any text when its file is not listed. */
+	readonly disk = new Map<string, string>();
 	readonly links: string[] = [];
 	released = 0;
 
@@ -65,6 +67,10 @@ class TestLinker {
 				if (text.length === 0) {
 					setText(text, editorText);
 				}
+			},
+			owns: (claim: string) => {
+				const disk = this.disk.get(path);
+				return disk === undefined || claim === disk || claim === text.toJSON();
 			},
 			release: () => {
 				this.released++;
@@ -143,6 +149,41 @@ describe('editor binding', () => {
 		editor.handle?.setPath('picture.png');
 		await tick();
 		expect(editor.handle?.bound).toBe(false);
+	});
+
+	it('shows the new note instead of merging the previous file\'s text into it', async () => {
+		const linker = new TestLinker();
+		const sync = new EditorSync();
+		sync.setLinker(linker);
+		for (const [path, text] of [['A.md', 'alpha'], ['B.md', 'bravo']]) {
+			linker.disk.set(path as string, text as string);
+			setText(linker.doc(path as string).getText('content'), text as string);
+		}
+		const editor = new TestEditor('alpha');
+		editor.handle = sync.attach(editor, 'A.md');
+		await tick();
+		editor.handle.setPath('B.md');
+		await tick();
+		expect(linker.doc('B.md').getText('content').toJSON()).toBe('bravo');
+		expect(editor.text()).toBe('bravo');
+		editor.type(5, 5, '!');
+		expect(linker.doc('B.md').getText('content').toJSON()).toBe('bravo!');
+		expect(linker.doc('A.md').getText('content').toJSON()).toBe('alpha');
+	});
+
+	it('links no note after a load until the next update, then merges what was loaded', async () => {
+		const { editor, ytext } = await setup('');
+		expect(editor.handle?.bound).toBe(true);
+		editor.state = EditorState.create({ doc: 'loaded' });
+		editor.handle?.loaded();
+		await tick();
+		expect(editor.handle?.bound).toBe(false);
+		expect(ytext.toJSON()).toBe('');
+		editor.handle?.resume();
+		await tick();
+		expect(editor.handle?.bound).toBe(true);
+		expect(ytext.toJSON()).toBe('loaded');
+		expect(editor.text()).toBe('loaded');
 	});
 
 	it('unbinds everything when sync stops, and binds again when it starts', async () => {

@@ -18,13 +18,23 @@ export interface NoteLinker {
 class Binding {
 	private readonly observer: (event: Y.YTextEvent, tr: Y.Transaction) => void;
 
+	/**
+	 * `claim` is the text the editor held when it last showed a file it was
+	 * not linked for, or null when its text is known to be this file's.
+	 */
 	constructor(
 		private readonly link: NoteLink,
 		private readonly port: EditorPort,
+		claim: string | null,
 	) {
 		// The editor may show text from before remote changes arrived, or edits
 		// made while the note was loading: merge it in, then show the result.
-		link.adopt(port.text());
+		// Right after the editor switched files, its text can still be the
+		// previous file's: merge it only if it started out as this note's.
+		// Otherwise the note's text wins and replaces it.
+		if (claim === null || link.owns(claim)) {
+			link.adopt(port.text());
+		}
 		const edits = diffText(port.text(), link.text.toJSON());
 		if (edits.length > 0) {
 			port.applyRemote(edits);
@@ -149,7 +159,7 @@ export class EditorSync {
 	consider(handle: EditorHandle): void {
 		const linker = this.linker;
 		const path = handle.path;
-		if (linker === null || path === null || handle.engaged) {
+		if (linker === null || path === null || handle.engaged || handle.held) {
 			return;
 		}
 		for (const other of this.handles) {
@@ -169,12 +179,22 @@ export class EditorHandle {
 	private binding: Binding | null = null;
 	private attempt = 0;
 	private linking = false;
+	/**
+	 * The editor's text when it last showed a new file or was loaded, until a
+	 * note is linked: the note checks it is its own before merging the
+	 * editor's text. Null once linked, while the text is known to be the
+	 * file's.
+	 */
+	private claim: string | null;
+	private holding = false;
 
 	constructor(
 		private readonly owner: EditorSync,
 		private readonly port: EditorPort,
 		public path: string | null,
-	) {}
+	) {
+		this.claim = port.text();
+	}
 
 	/** True while bound or about to be. */
 	get engaged(): boolean {
@@ -185,6 +205,11 @@ export class EditorHandle {
 		return this.binding !== null;
 	}
 
+	/** Loaded while showing `path`, and not yet known to be that file's text. */
+	get held(): boolean {
+		return this.holding;
+	}
+
 	/** The editor now shows another file (or the same file under a new name). */
 	setPath(path: string | null): void {
 		if (path === this.path) {
@@ -192,9 +217,35 @@ export class EditorHandle {
 		}
 		const old = this.path;
 		this.unbind();
+		this.holding = false;
 		this.path = path;
+		// The text may still be the previous file's until the new one loads.
+		this.claim = this.port.text();
 		this.owner.released(old);
 		this.owner.consider(this);
+	}
+
+	/**
+	 * The app replaced the editor's whole text, by loading a file rather than
+	 * by typing. If the editor is about to show another file, that file was
+	 * loaded, so the text goes to no note yet: the editor stays unlinked until
+	 * its next update shows which file it belongs to.
+	 */
+	loaded(): void {
+		this.unbind();
+		this.holding = true;
+	}
+
+	/**
+	 * The editor's next update still shows the same file: what was loaded is
+	 * this file's text, so link again and merge it.
+	 */
+	resume(): void {
+		if (this.holding) {
+			this.holding = false;
+			this.claim = null;
+			this.owner.consider(this);
+		}
 	}
 
 	/** The editor's own edits, in positions before the change. */
@@ -223,7 +274,8 @@ export class EditorHandle {
 				}
 				this.linking = false;
 				if (link !== null) {
-					this.binding = new Binding(link, this.port);
+					this.binding = new Binding(link, this.port, this.claim);
+					this.claim = null;
 				}
 			},
 			() => {

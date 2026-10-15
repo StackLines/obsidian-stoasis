@@ -16,7 +16,7 @@ import {
 	toRelative,
 	toVaultPath,
 } from './paths';
-import { captureBase, mergeOutsideEdit, setText, type MergeBase } from './text';
+import { captureBase, mergeOutsideEdit, replacesMost, setText, type MergeBase } from './text';
 
 /** The few vault operations the engine needs, with vault-relative paths. */
 export interface VaultAdapter {
@@ -89,8 +89,17 @@ export interface EngineOptions {
 /** A link between an open editor and a note's shared text. */
 export interface NoteLink {
 	readonly text: Y.Text;
-	/** Merges the editor's text, which may predate remote changes, into the note. */
+	/**
+	 * Merges the editor's text, which may predate remote changes, into the
+	 * note. Refuses, and reports it, when that would replace most of the
+	 * note's text.
+	 */
 	adopt(editorText: string): void;
+	/**
+	 * Whether `text` is this note's file as this device knows it: on disk
+	 * when linked, as last synced, or as the note holds it now.
+	 */
+	owns(text: string): boolean;
 	release(): void;
 }
 
@@ -322,6 +331,12 @@ export class SyncEngine {
 		}
 		const note = await this.note(id);
 		await note.open.store.loaded;
+		let disk: string | null = null;
+		try {
+			disk = await this.vault.read(path);
+		} catch {
+			// Not readable now: the note's own copies still count.
+		}
 		note.editors++;
 		let released = false;
 		return {
@@ -338,8 +353,17 @@ export class SyncEngine {
 					void this.enqueue(() => this.keepCopy(at, editorText));
 					return;
 				}
+				if (replacesMost(current, this.mergedText(note, editorText))) {
+					// Nobody typed this: an editor that still shows another
+					// note's text must not replace this one. Show the note's.
+					this.options.onProblem?.(
+						`An editor's text was not merged into "${this.relOf(note.id) ?? rel ?? path}" because it would have replaced most of the note; the synced text was kept.`,
+					);
+					return;
+				}
 				this.mergeDisk(note, editorText, false);
 			},
+			owns: (text) => text === disk || text === note.base?.text || text === note.text.toJSON(),
 			release: () => {
 				if (!released) {
 					released = true;
@@ -463,6 +487,19 @@ export class SyncEngine {
 		if (onDisk) {
 			this.keepBase(note, base);
 		}
+	}
+
+	/** The text the note would hold after merging `text` as an outside edit. */
+	private mergedText(note: Note, text: string): string {
+		if (note.base === null || note.text.toJSON() === note.base.text) {
+			return text;
+		}
+		const scratch = new Y.Doc();
+		Y.applyUpdate(scratch, Y.encodeStateAsUpdate(note.open.doc));
+		mergeOutsideEdit(scratch, NOTE_FIELD, note.base, text, ENGINE);
+		const merged = scratch.getText(NOTE_FIELD).toJSON();
+		scratch.destroy();
+		return merged;
 	}
 
 	private async diskDeleted(rel: string): Promise<void> {
