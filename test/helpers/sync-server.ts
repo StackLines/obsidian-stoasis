@@ -12,6 +12,13 @@ export class TestSyncServer {
 	readonly validTokens = new Set(['good']);
 	/** Documents nobody may open. */
 	readonly forbidden = new Set<string>();
+	/** Documents refused once each, then allowed. */
+	readonly refuseOnce = new Set<string>();
+	/**
+	 * Like a real server: a note may only be opened once a space lists it,
+	 * in the space's stored or live state.
+	 */
+	requireListing = false;
 	/** Authentications in flight right now, and the most seen at once. */
 	pendingAuth = 0;
 	maxPendingAuth = 0;
@@ -38,7 +45,13 @@ export class TestSyncServer {
 					if (this.authDelayMs > 0) {
 						await new Promise((resolve) => setTimeout(resolve, this.authDelayMs));
 					}
-					if (!this.validTokens.has(token) || this.forbidden.has(documentName)) {
+					const once = this.refuseOnce.delete(documentName);
+					if (
+						!this.validTokens.has(token) ||
+						this.forbidden.has(documentName) ||
+						once ||
+						(this.requireListing && !this.listed(documentName))
+					) {
 						this.refusals++;
 						throw new Error('refused');
 					}
@@ -84,6 +97,33 @@ export class TestSyncServer {
 			socket.destroy();
 		}
 		this.sockets.clear();
+	}
+
+	/** Whether a space lists the note `name`; documents other than notes always are. */
+	private listed(name: string): boolean {
+		if (!name.startsWith('note:')) {
+			return true;
+		}
+		const id = name.slice('note:'.length);
+		const lists = (doc: Y.Doc) =>
+			[...doc.getMap('index').values()].some(
+				(entry) => typeof entry === 'object' && entry !== null && (entry as { id?: unknown }).id === id,
+			);
+		for (const [docName, state] of this.stored) {
+			if (docName.startsWith('space:')) {
+				const doc = new Y.Doc();
+				Y.applyUpdate(doc, state);
+				if (lists(doc)) {
+					return true;
+				}
+			}
+		}
+		for (const [docName, document] of this.server?.hocuspocus.documents ?? []) {
+			if (docName.startsWith('space:') && lists(document)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** The server's current text of a note, from what it stored. */

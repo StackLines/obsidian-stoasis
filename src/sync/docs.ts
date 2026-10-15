@@ -46,9 +46,18 @@ export interface OpenDoc {
 	readonly store: LocalStore;
 	/** True once the server's copy has been merged in this session. */
 	readonly synced: boolean;
-	/** True when the server refused access to this document. */
+	/**
+	 * True while synced and the server has confirmed every change made here,
+	 * so nothing in the document exists on this device only.
+	 */
+	readonly confirmed: boolean;
+	/** True when the server refused access to this document, even after a retry. */
 	readonly refused: boolean;
-	/** Resolves when the server's copy has been merged in this session. */
+	/**
+	 * Settles when the server's copy has been merged in this session, when the
+	 * server refused the document, or when the source shuts down. Check
+	 * `synced` afterwards.
+	 */
 	whenSynced(): Promise<void>;
 }
 
@@ -63,6 +72,8 @@ export interface DocSource {
 	 * not offline, documents not synced yet.
 	 */
 	readonly pending: number;
+	/** Documents the server refused; their changes stay on this device. */
+	readonly refused: number;
 	/** Calls `listener` when the state or the pending count changes. */
 	onChange(listener: () => void): () => void;
 	open(name: string): OpenDoc;

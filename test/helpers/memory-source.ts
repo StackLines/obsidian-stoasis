@@ -33,12 +33,27 @@ class MemoryOpenDoc implements OpenDoc {
 		readonly name: string,
 		stores: LocalStoreFactory,
 		private readonly hub: MemoryHub,
+		private readonly changed: () => void,
 	) {
 		this.store = stores(name, this.doc);
 	}
 
+	/** Every change reaches the hub at once while connected. */
+	get confirmed(): boolean {
+		return this.synced;
+	}
+
 	whenSynced(): Promise<void> {
 		return this.synced ? Promise.resolve() : new Promise((resolve) => this.waiters.push(resolve));
+	}
+
+	/** Lets everyone waiting go on without syncing, as when the source shuts down. */
+	settle(): void {
+		const waiters = this.waiters;
+		this.waiters = [];
+		for (const resolve of waiters) {
+			resolve();
+		}
 	}
 
 	connect(): void {
@@ -53,6 +68,8 @@ class MemoryOpenDoc implements OpenDoc {
 		const up = (update: Uint8Array, origin: unknown) => {
 			if (origin !== fromHub) {
 				Y.applyUpdate(remote, update, toHub);
+				// The server confirming the change, as a real source reports it.
+				queueMicrotask(this.changed);
 			}
 		};
 		const down = (update: Uint8Array, origin: unknown) => {
@@ -67,11 +84,7 @@ class MemoryOpenDoc implements OpenDoc {
 			remote.off('update', down);
 		};
 		this.synced = true;
-		const waiters = this.waiters;
-		this.waiters = [];
-		for (const resolve of waiters) {
-			resolve();
-		}
+		this.settle();
 	}
 
 	disconnect(): void {
@@ -99,6 +112,10 @@ export class MemoryDocSource implements DocSource {
 		return [...this.docs.values()].filter((d) => !d.synced).length;
 	}
 
+	get refused(): number {
+		return 0;
+	}
+
 	onChange(listener: () => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -107,7 +124,7 @@ export class MemoryDocSource implements DocSource {
 	open(name: string): OpenDoc {
 		let entry = this.docs.get(name);
 		if (entry === undefined) {
-			entry = new MemoryOpenDoc(name, this.stores, this.hub);
+			entry = new MemoryOpenDoc(name, this.stores, this.hub, () => this.notify());
 			this.docs.set(name, entry);
 			if (this.state === 'online') {
 				entry.connect();
@@ -120,6 +137,7 @@ export class MemoryDocSource implements DocSource {
 		const entry = this.docs.get(name);
 		if (entry !== undefined) {
 			entry.disconnect();
+			entry.settle();
 			this.docs.delete(name);
 			await entry.store.destroy();
 		}
@@ -134,14 +152,18 @@ export class MemoryDocSource implements DocSource {
 				entry.disconnect();
 			}
 		}
-		for (const listener of this.listeners) {
-			listener();
-		}
+		this.notify();
 	}
 
 	async destroy(): Promise<void> {
 		for (const name of [...this.docs.keys()]) {
 			await this.close(name);
+		}
+	}
+
+	private notify(): void {
+		for (const listener of this.listeners) {
+			listener();
 		}
 	}
 }
@@ -153,14 +175,25 @@ export interface VaultListener {
 	fileRenamed(path: string, oldPath: string): void;
 }
 
+export type VaultOperation = 'read' | 'create' | 'process' | 'rename' | 'trash';
+
 /**
  * Files in memory. Like Obsidian, every change fires an event afterwards,
- * whether the user or the plugin made it.
+ * whether the user or the plugin made it. File operations take `ioDelayMs`
+ * (zero by default), and `failNext` makes one of them fail, as a full disk or
+ * a locked file would.
  */
 export class FakeVault implements VaultAdapter {
 	readonly files = new Map<string, string>();
 	readonly trashed: string[] = [];
 	listener: VaultListener | null = null;
+	ioDelayMs = 0;
+	private readonly faults: Array<{ op: VaultOperation; path: string | null; message: string }> = [];
+
+	/** Makes the next `op` (on `path`, when given) fail with `message`. */
+	failNext(op: VaultOperation, path: string | null = null, message = 'disk write failed'): void {
+		this.faults.push({ op, path, message });
+	}
 
 	listMarkdown(folder: string): string[] {
 		return [...this.files.keys()].filter((p) => p.startsWith(`${folder}/`) && p.endsWith('.md'));
@@ -170,51 +203,55 @@ export class FakeVault implements VaultAdapter {
 		return this.files.has(path);
 	}
 
-	read(path: string): Promise<string> {
+	async read(path: string): Promise<string> {
+		await this.io('read', path);
 		const text = this.files.get(path);
-		return text === undefined ? Promise.reject(new Error(`No file ${path}`)) : Promise.resolve(text);
+		if (text === undefined) {
+			throw new Error(`No file ${path}`);
+		}
+		return text;
 	}
 
-	create(path: string, text: string): Promise<void> {
+	async create(path: string, text: string): Promise<void> {
+		await this.io('create', path);
 		if (this.files.has(path)) {
-			return Promise.reject(new Error(`File exists: ${path}`));
+			throw new Error(`File exists: ${path}`);
 		}
 		this.files.set(path, text);
 		this.emit((l) => l.fileCreated(path));
-		return Promise.resolve();
 	}
 
-	process(path: string, update: (current: string) => string): Promise<void> {
+	async process(path: string, update: (current: string) => string): Promise<void> {
+		await this.io('process', path);
 		const current = this.files.get(path);
 		if (current === undefined) {
-			return Promise.reject(new Error(`No file ${path}`));
+			throw new Error(`No file ${path}`);
 		}
 		const next = update(current);
 		this.files.set(path, next);
 		if (next !== current) {
 			this.emit((l) => l.fileModified(path));
 		}
-		return Promise.resolve();
 	}
 
-	rename(from: string, to: string): Promise<void> {
+	async rename(from: string, to: string): Promise<void> {
+		await this.io('rename', from);
 		const text = this.files.get(from);
 		if (text === undefined || this.files.has(to)) {
-			return Promise.reject(new Error(`Cannot rename ${from} to ${to}`));
+			throw new Error(`Cannot rename ${from} to ${to}`);
 		}
 		this.files.delete(from);
 		this.files.set(to, text);
 		this.emit((l) => l.fileRenamed(to, from));
-		return Promise.resolve();
 	}
 
-	trash(path: string): Promise<void> {
+	async trash(path: string): Promise<void> {
+		await this.io('trash', path);
 		if (!this.files.delete(path)) {
-			return Promise.reject(new Error(`No file ${path}`));
+			throw new Error(`No file ${path}`);
 		}
 		this.trashed.push(path);
 		this.emit((l) => l.fileDeleted(path));
-		return Promise.resolve();
 	}
 
 	// What the user does.
@@ -231,7 +268,24 @@ export class FakeVault implements VaultAdapter {
 	}
 
 	move(from: string, to: string): void {
-		void this.rename(from, to);
+		const text = this.files.get(from);
+		if (text === undefined || this.files.has(to)) {
+			throw new Error(`Cannot move ${from} to ${to}`);
+		}
+		this.files.delete(from);
+		this.files.set(to, text);
+		this.emit((l) => l.fileRenamed(to, from));
+	}
+
+	private async io(op: VaultOperation, path: string): Promise<void> {
+		if (this.ioDelayMs > 0) {
+			await new Promise((resolve) => setTimeout(resolve, this.ioDelayMs));
+		}
+		const index = this.faults.findIndex((f) => f.op === op && (f.path === null || f.path === path));
+		if (index !== -1) {
+			const [fault] = this.faults.splice(index, 1);
+			throw new Error(fault?.message ?? 'failed');
+		}
 	}
 
 	private emit(event: (listener: VaultListener) => void): void {

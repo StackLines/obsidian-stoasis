@@ -12,6 +12,7 @@ import {
 	isNoteId,
 	isSyncablePath,
 	newNoteId,
+	sparePath,
 	toRelative,
 	toVaultPath,
 } from './paths';
@@ -99,6 +100,11 @@ interface Note {
 	text: Y.Text;
 	/** State matching the text on disk, to merge disk edits against. */
 	base: MergeBase | null;
+	/**
+	 * Changed on this device since the server last confirmed the note while
+	 * the space still listed it. Kept across restarts.
+	 */
+	dirty: boolean;
 	editors: number;
 	writeTimer: number | null;
 	waiting: boolean;
@@ -108,6 +114,9 @@ interface Note {
 /** Transaction origin for changes the engine makes itself. */
 const ENGINE = Symbol('stoasis-engine');
 const BASE_KEY = 'base';
+const DIRTY_KEY = 'dirty';
+/** Kept with the space document once it holds the server's index. */
+const SEEDED_KEY = 'seeded';
 
 /**
  * Keeps one vault folder and one space in step: the space index decides which
@@ -115,7 +124,10 @@ const BASE_KEY = 'base';
  *
  * All work runs one task at a time. Handlers check the current state rather
  * than remembering what the engine did itself, so the vault events caused by
- * the engine's own writes are harmless no-ops.
+ * the engine's own writes are harmless no-ops; only the engine's own moves
+ * are remembered, because a move cannot be told apart from the user's.
+ * What the engine tracks on disk changes only after the file operation
+ * succeeded.
  */
 export class SyncEngine {
 	private readonly vault: VaultAdapter;
@@ -127,10 +139,15 @@ export class SyncEngine {
 	private index: OpenDoc | null = null;
 	private map: Y.Map<unknown> | null = null;
 	private readonly notes = new Map<string, Note>();
+	/** Moves the engine made, as "from\0to", until their vault events arrive. */
+	private readonly ownMoves = new Set<string>();
 	private queue: Promise<void> = Promise.resolve();
 	private stopped = false;
 	private started = false;
+	private readonly stopping: Promise<void>;
+	private signalStop: () => void = () => undefined;
 	private unobserveIndex: (() => void) | null = null;
+	private unwatchSource: (() => void) | null = null;
 
 	constructor(private readonly options: EngineOptions) {
 		this.vault = options.vault;
@@ -139,6 +156,9 @@ export class SyncEngine {
 		this.state = options.state;
 		this.writeDelayMs = options.writeDelayMs ?? 500;
 		this.now = options.now ?? (() => new Date());
+		this.stopping = new Promise((resolve) => {
+			this.signalStop = resolve;
+		});
 	}
 
 	/** True once the first full pass over the folder has run. */
@@ -146,16 +166,27 @@ export class SyncEngine {
 		return this.started;
 	}
 
-	/** Loads the space, waiting for the server the first time only, then reconciles. */
+	/**
+	 * Loads the space and reconciles the folder with it. The first time, and
+	 * whenever the space is missing from this device's cache, it waits for the
+	 * server first. Settles early, without starting, when stopped meanwhile or
+	 * when the server cannot be used.
+	 */
 	async start(): Promise<void> {
 		const index = this.source.open(spaceDocName(this.options.spaceId));
 		this.index = index;
-		await index.store.loaded;
-		if (!this.state.seeded) {
-			await index.whenSynced();
-		}
+		await Promise.race([index.store.loaded, this.stopping]);
 		if (this.stopped) {
 			return;
+		}
+		const cached = (await index.store.get(SEEDED_KEY)) === '1';
+		if (!this.state.seeded || !cached) {
+			// Without the server's index here, a file missing from it could be
+			// mistaken for a note deleted elsewhere.
+			await Promise.race([index.whenSynced(), this.stopping]);
+			if (this.stopped || !index.synced) {
+				return;
+			}
 		}
 		const map = index.doc.getMap<unknown>(INDEX_FIELD);
 		this.map = map;
@@ -166,6 +197,7 @@ export class SyncEngine {
 		};
 		map.observe(onIndex);
 		this.unobserveIndex = () => map.unobserve(onIndex);
+		this.unwatchSource = this.source.onChange(() => this.confirmNotes());
 
 		await this.enqueue(async () => {
 			for (const id of new Set(this.entries().map(([, entry]) => entry.id))) {
@@ -178,13 +210,17 @@ export class SyncEngine {
 			await this.scanDisk();
 			this.state.seeded = true;
 			this.save();
+			await index.store.set(SEEDED_KEY, '1');
 			this.started = true;
 		});
 	}
 
+	/** Stops all work; settles once the task running now, if any, is done. */
 	async stop(): Promise<void> {
 		this.stopped = true;
+		this.signalStop();
 		this.unobserveIndex?.();
+		this.unwatchSource?.();
 		await this.queue;
 		for (const note of this.notes.values()) {
 			if (note.writeTimer !== null) {
@@ -229,8 +265,14 @@ export class SyncEngine {
 		if (from === null && to === null) {
 			return;
 		}
+		const own = this.ownMoves.delete(`${oldPath}\0${path}`);
 		void this.enqueue(async () => {
-			if (from === null && to !== null) {
+			if (own) {
+				// The engine moved this file itself and already tracks it.
+				if (to !== null) {
+					await this.diskModified(to);
+				}
+			} else if (from === null && to !== null) {
 				await this.diskCreated(to);
 			} else if (from !== null && to === null) {
 				await this.diskDeleted(from);
@@ -250,7 +292,10 @@ export class SyncEngine {
 
 	/** Checks the folder against what the engine knows, as at startup. */
 	rescan(): void {
-		void this.enqueue(() => this.scanDisk());
+		void this.enqueue(async () => {
+			await this.scanDisk();
+			await this.reconcile();
+		});
 	}
 
 	/** Whether a vault file is one this engine syncs. */
@@ -277,9 +322,18 @@ export class SyncEngine {
 		return {
 			text: note.text,
 			adopt: (editorText) => {
-				if (editorText !== note.text.toJSON()) {
-					this.mergeDisk(note, editorText, false);
+				const current = note.text.toJSON();
+				if (editorText === current) {
+					return;
 				}
+				if (note.base === null && current !== '' && editorText !== '') {
+					// Nothing on this device says how the two relate: show the
+					// note's text, and keep the editor's as a note of its own.
+					const at = this.relOf(note.id) ?? rel ?? 'Untitled.md';
+					void this.enqueue(() => this.keepCopy(at, editorText));
+					return;
+				}
+				this.mergeDisk(note, editorText, false);
 			},
 			release: () => {
 				if (!released) {
@@ -312,17 +366,30 @@ export class SyncEngine {
 		await this.addLocalNote(rel);
 	}
 
-	private async addLocalNote(rel: string): Promise<void> {
+	/** Makes the file at `rel` a new note and returns its id. */
+	private async addLocalNote(rel: string): Promise<string> {
 		const text = await this.vault.read(this.path(rel));
 		const id = newNoteId();
+		// List the note in the space before opening it: the server only lets a
+		// device open a new note that its space already lists.
+		const map = this.requireMap();
+		map.doc?.transact(() => map.set(rel, { id, kind: 'markdown' }), ENGINE);
 		const note = await this.note(id);
 		note.open.doc.transact(() => setText(note.text, text), ENGINE);
 		this.setBase(note);
-		this.requireMap().doc?.transact(() => {
-			this.requireMap().set(rel, { id, kind: 'markdown' });
-		}, ENGINE);
 		this.state.known[rel] = id;
 		this.save();
+		return id;
+	}
+
+	/** Keeps `text` as a new note next to `rel`. */
+	private async keepCopy(rel: string, text: string): Promise<void> {
+		const spare = conflictPath(rel, this.now(), (p) => this.taken(p));
+		await this.vault.create(this.path(spare), text);
+		await this.addLocalNote(spare);
+		this.options.onProblem?.(
+			`"${rel}" differed from the server copy; your copy was kept as "${spare}".`,
+		);
 	}
 
 	private async diskModified(rel: string): Promise<void> {
@@ -347,11 +414,19 @@ export class SyncEngine {
 			// The open editor is the source of truth and saves on its own.
 			return;
 		}
+		if (note.base === null) {
+			// What this device last synced is unknown (its cache was lost, say):
+			// compare with the server's copy instead of overwriting either.
+			if (!this.isReady(note)) {
+				this.whenReady(note);
+				return;
+			}
+			await this.bindExisting(rel, note);
+			return;
+		}
 		this.mergeDisk(note, text);
 		if (note.text.toJSON() !== text) {
 			this.scheduleWrite(note);
-		} else {
-			this.setBase(note);
 		}
 	}
 
@@ -437,14 +512,64 @@ export class SyncEngine {
 		if (!this.vault.exists(path)) {
 			return;
 		}
+		if (note.base === null) {
+			await this.diskModified(rel);
+			return;
+		}
+		await this.writeFile(path, note);
+	}
+
+	/**
+	 * Writes a note's text to its file, first merging disk edits not seen yet.
+	 * The base is what was actually written, so a change arriving while the
+	 * file is written is written later, not mistaken for a disk edit. With
+	 * `expected`, writes only over that text and returns whether it did.
+	 */
+	private async writeFile(path: string, note: Note, expected?: string): Promise<boolean> {
+		const written: { base?: MergeBase } = {};
 		await this.vault.process(path, (current) => {
-			if (current !== note.text.toJSON() && current !== note.base?.text) {
-				// Edited on disk since the last sync and not seen yet: merge first.
-				this.mergeDisk(note, current);
+			if (expected !== undefined && current !== expected) {
+				return current;
 			}
-			return note.text.toJSON();
+			if (note.base !== null && current !== note.base.text && current !== note.text.toJSON()) {
+				// Edited on disk since the last sync and not seen yet: merge first.
+				this.mergeDisk(note, current, false);
+			}
+			written.base = captureBase(note.open.doc, NOTE_FIELD);
+			return written.base.text;
 		});
-		this.setBase(note);
+		if (written.base === undefined) {
+			return false;
+		}
+		this.keepBase(note, written.base);
+		return true;
+	}
+
+	/** Creates the file for a note, tracking it once it exists. */
+	private async createFile(rel: string, note: Note): Promise<void> {
+		const base = captureBase(note.open.doc, NOTE_FIELD);
+		await this.vault.create(this.path(rel), base.text);
+		this.state.known[rel] = note.id;
+		this.keepBase(note, base);
+		this.save();
+	}
+
+	/** Moves a file the engine tracks; the vault event for it is then ignored. */
+	private async moveFile(from: string, to: string): Promise<void> {
+		const key = `${this.path(from)}\0${this.path(to)}`;
+		this.ownMoves.add(key);
+		try {
+			await this.vault.rename(this.path(from), this.path(to));
+		} catch (error) {
+			this.ownMoves.delete(key);
+			throw error;
+		}
+		const id = this.state.known[from];
+		if (id !== undefined) {
+			delete this.state.known[from];
+			this.state.known[to] = id;
+			this.save();
+		}
 	}
 
 	/** Brings the folder in line with the space index. */
@@ -452,82 +577,68 @@ export class SyncEngine {
 		if (this.stopped) {
 			return;
 		}
+		this.normalizeIndex();
 		const map = this.requireMap();
-		const entries = this.entries();
 		const indexed = new Map<string, string>();
-		for (const [rel, entry] of entries) {
+		for (const [rel, entry] of this.entries()) {
 			indexed.set(entry.id, rel);
 		}
 		const known = this.state.known;
 
 		// Notes no longer in the space.
 		for (const [rel, id] of Object.entries(known)) {
-			if (indexed.has(id)) {
+			if (indexed.has(id) || known[rel] !== id) {
 				continue;
 			}
-			delete known[rel];
+			const path = this.path(rel);
 			if (this.entry(rel) !== null) {
 				// Another device put a different note at this path, typically
 				// while both created it offline. Keep ours next to it.
-				const spare = conflictPath(rel, this.now(), (p) => this.taken(p));
-				known[spare] = id;
-				map.doc?.transact(() => map.set(spare, { id, kind: 'markdown' }), ENGINE);
-				if (this.vault.exists(this.path(rel))) {
-					await this.vault.rename(this.path(rel), this.path(spare));
+				if (!this.vault.exists(path)) {
+					delete known[rel];
+					this.save();
+					await this.forget(id);
+					continue;
 				}
+				const spare = conflictPath(rel, this.now(), (p) => this.taken(p));
+				await this.moveFile(rel, spare);
+				map.doc?.transact(() => map.set(spare, { id, kind: 'markdown' }), ENGINE);
+				indexed.set(id, spare);
 				this.options.onProblem?.(
 					`Another device also created "${rel}"; this device's copy is now "${spare}".`,
 				);
 				continue;
 			}
-			// Removed from the space: remove it here too.
-			const path = this.path(rel);
+			// Removed from the space: remove it here too, unless this device has
+			// changes the other one cannot have seen.
 			if (this.vault.exists(path)) {
 				const note = await this.note(id);
 				const text = await this.vault.read(path);
-				if (note.base !== null && text !== note.base.text) {
-					// Changed here since the last sync: keep it as a new note.
+				const unseen =
+					note.base === null || text !== note.base.text || note.dirty || note.editors > 0;
+				if (unseen) {
+					delete known[rel];
 					await this.forget(id);
-					await this.addLocalNote(rel);
+					indexed.set(await this.addLocalNote(rel), rel);
+					this.options.onProblem?.(
+						`"${rel}" was deleted on another device, but had changes here that it had not seen; it was kept.`,
+					);
 					continue;
 				}
 				await this.vault.trash(path);
 			}
+			delete known[rel];
+			this.save();
 			await this.forget(id);
 		}
 
-		// Notes moved to another path.
-		for (const [rel, id] of Object.entries(known)) {
-			const target = indexed.get(id);
-			if (target === undefined || target === rel) {
-				continue;
-			}
-			delete known[rel];
-			const from = this.path(rel);
-			const to = this.path(target);
-			if (!this.vault.exists(from)) {
-				continue;
-			}
-			if (this.vault.exists(to) && known[target] === undefined) {
-				// An untracked file is in the way: keep it as a note of its own.
-				const spare = conflictPath(target, this.now(), (p) => this.taken(p));
-				await this.vault.rename(to, this.path(spare));
-				await this.addLocalNote(spare);
-			}
-			if (!this.vault.exists(to)) {
-				known[target] = id;
-				await this.vault.rename(from, to);
-			}
-		}
+		await this.applyMoves(indexed);
 
+		const knownIds = new Set(Object.values(known));
 		for (const [rel, entry] of this.entries()) {
 			const id = entry.id;
-			const current = known[rel];
-			if (current === id) {
-				continue;
-			}
-			if (current !== undefined) {
-				// Still taken by a note the passes above could not move.
+			if (known[rel] !== undefined || knownIds.has(id)) {
+				// Already here, or still taken by a note the passes above could not move.
 				continue;
 			}
 			const note = await this.note(id);
@@ -535,45 +646,143 @@ export class SyncEngine {
 				this.whenReady(note);
 				continue;
 			}
-			const path = this.path(rel);
-			if (!this.vault.exists(path)) {
-				known[rel] = id;
-				await this.vault.create(path, note.text.toJSON());
-				this.setBase(note);
-				continue;
+			if (!this.vault.exists(this.path(rel))) {
+				await this.createFile(rel, note);
+			} else {
+				await this.bindExisting(rel, note);
 			}
-			await this.bindExisting(rel, note);
+			knownIds.add(id);
 		}
 		this.save();
 	}
 
-	/** A file already sits where the index puts a note this device has not seen. */
+	/**
+	 * Keeps one path per note. Devices that renamed a note at the same time
+	 * each add their path; all of them keep the same one.
+	 */
+	private normalizeIndex(): void {
+		const map = this.requireMap();
+		const keep = new Map<string, string>();
+		const drop: string[] = [];
+		for (const [rel, entry] of this.entries()) {
+			const kept = keep.get(entry.id);
+			if (kept === undefined) {
+				keep.set(entry.id, rel);
+			} else if (rel < kept) {
+				drop.push(kept);
+				keep.set(entry.id, rel);
+			} else {
+				drop.push(rel);
+			}
+		}
+		if (drop.length > 0) {
+			map.doc?.transact(() => {
+				for (const rel of drop) {
+					map.delete(rel);
+				}
+			}, ENGINE);
+		}
+	}
+
+	/** Moves tracked files to where the index puts their notes. */
+	private async applyMoves(indexed: Map<string, string>): Promise<void> {
+		const known = this.state.known;
+		for (;;) {
+			let progress = true;
+			while (progress) {
+				progress = false;
+				for (const [rel, id] of Object.entries(known)) {
+					const target = indexed.get(id);
+					if (target === undefined || target === rel || known[rel] !== id) {
+						continue;
+					}
+					if (!this.vault.exists(this.path(rel))) {
+						// Gone from here; it is created where it belongs below.
+						delete known[rel];
+						this.save();
+						progress = true;
+						continue;
+					}
+					if (known[target] !== undefined) {
+						// Another note still sits there and moves away first.
+						continue;
+					}
+					if (this.vault.exists(this.path(target))) {
+						// An untracked file is in the way: keep it as a note of its own.
+						const spare = conflictPath(target, this.now(), (p) => this.taken(p));
+						await this.moveFile(target, spare);
+						indexed.set(await this.addLocalNote(spare), spare);
+					}
+					await this.moveFile(rel, target);
+					progress = true;
+				}
+			}
+			// What is left waits on notes that wait in turn. Where they wait on
+			// each other in a circle, such as two notes that swapped paths, step
+			// one of them aside, then go on.
+			const stuck = Object.keys(known).find((rel) => this.movesInCircle(rel, indexed));
+			if (stuck === undefined) {
+				return;
+			}
+			await this.moveFile(stuck, sparePath(stuck, 'moving', (p) => this.taken(p)));
+		}
+	}
+
+	/** Whether the note at `rel` waits for a chain of notes that waits for it. */
+	private movesInCircle(rel: string, indexed: Map<string, string>): boolean {
+		const known = this.state.known;
+		const seen = new Set<string>();
+		let current = rel;
+		for (;;) {
+			const id = known[current];
+			const target = id === undefined ? undefined : indexed.get(id);
+			if (target === undefined || target === current || known[target] === undefined) {
+				return false;
+			}
+			if (target === rel) {
+				return true;
+			}
+			if (seen.has(target)) {
+				return false;
+			}
+			seen.add(target);
+			current = target;
+		}
+	}
+
+	/**
+	 * A file sits where the index puts a note, and this device does not know
+	 * how the two relate: a note it has not seen yet, or one whose last synced
+	 * state was lost. Tracks the file as that note once both agree.
+	 */
 	private async bindExisting(rel: string, note: Note): Promise<void> {
 		const path = this.path(rel);
 		const disk = await this.vault.read(path);
 		const remote = note.text.toJSON();
-		this.state.known[rel] = note.id;
 		if (disk === remote) {
 			this.setBase(note);
 		} else if (remote === '') {
 			note.open.doc.transact(() => setText(note.text, disk), ENGINE);
 			this.setBase(note);
 		} else if (disk === '') {
-			await this.vault.process(path, () => note.text.toJSON());
-			this.setBase(note);
+			if (!(await this.writeFile(path, note, disk))) {
+				// Typed into meanwhile; the event for that comes next.
+				return;
+			}
 		} else {
 			// Both have different text: keep the local file as its own note.
 			const spare = conflictPath(rel, this.now(), (p) => this.taken(p));
-			delete this.state.known[rel];
-			await this.vault.rename(path, this.path(spare));
+			await this.moveFile(rel, spare);
+			delete this.state.known[spare];
 			await this.addLocalNote(spare);
-			this.state.known[rel] = note.id;
-			await this.vault.create(path, note.text.toJSON());
-			this.setBase(note);
+			await this.createFile(rel, note);
 			this.options.onProblem?.(
 				`"${rel}" differed from the server copy; your copy was kept as "${spare}".`,
 			);
+			return;
 		}
+		this.state.known[rel] = note.id;
+		this.save();
 	}
 
 	/** Picks up changes made to the folder while the plugin was not running. */
@@ -619,13 +828,17 @@ export class SyncEngine {
 			open,
 			text,
 			base: null,
+			dirty: false,
 			editors: 0,
 			writeTimer: null,
 			waiting: false,
 			unobserve: () => undefined,
 		};
-		const observer = (_event: Y.YTextEvent, tr: Y.Transaction) => {
-			if (tr.origin !== ENGINE && note.editors === 0 && !this.stopped) {
+		const observer = (_event: Y.YTextEvent, { local, origin }: Y.Transaction) => {
+			if (local || origin === ENGINE) {
+				this.markDirty(note);
+			}
+			if (origin !== ENGINE && note.editors === 0 && !this.stopped) {
 				this.scheduleWrite(note);
 			}
 		};
@@ -640,7 +853,35 @@ export class SyncEngine {
 			note.base = { update: stored, text: scratch.getText(NOTE_FIELD).toJSON() };
 			scratch.destroy();
 		}
+		if ((await open.store.get(DIRTY_KEY)) === '1') {
+			note.dirty = true;
+		}
 		return note;
+	}
+
+	private markDirty(note: Note): void {
+		if (!note.dirty) {
+			note.dirty = true;
+			void note.open.store.set(DIRTY_KEY, '1');
+		}
+	}
+
+	/** Clears `dirty` on notes the server has confirmed while the space lists them. */
+	private confirmNotes(): void {
+		if (this.stopped || this.index?.synced !== true) {
+			return;
+		}
+		let listed: Set<string> | null = null;
+		for (const note of this.notes.values()) {
+			if (!note.dirty || !note.open.confirmed) {
+				continue;
+			}
+			listed ??= new Set(this.entries().map(([, entry]) => entry.id));
+			if (listed.has(note.id)) {
+				note.dirty = false;
+				void note.open.store.set(DIRTY_KEY, '0');
+			}
+		}
 	}
 
 	private setBase(note: Note): void {
@@ -657,6 +898,7 @@ export class SyncEngine {
 		return note.open.synced || note.base !== null || note.text.length > 0;
 	}
 
+	/** Reconciles again once the server's copy of the note arrives. */
 	private whenReady(note: Note): void {
 		if (note.waiting) {
 			return;
@@ -664,8 +906,15 @@ export class SyncEngine {
 		note.waiting = true;
 		void note.open.whenSynced().then(() => {
 			note.waiting = false;
-			if (!note.open.refused) {
-				void this.enqueue(() => this.reconcile());
+			// Refused, or the source stopped: nothing will arrive.
+			if (note.open.synced && !this.stopped) {
+				void this.enqueue(async () => {
+					await this.reconcile();
+					const rel = this.relOf(note.id);
+					if (rel !== null) {
+						await this.diskModified(rel);
+					}
+				});
 			}
 		});
 	}

@@ -22,14 +22,14 @@ class TestSocket extends WebSocket {
 let server: TestSyncServer;
 const sources: HocuspocusDocSource[] = [];
 
-function device(options: { access?: SyncAccess; disk?: MemoryDisk; batchSize?: number } = {}) {
+function device(options: { access?: SyncAccess; disk?: MemoryDisk; maxAuthenticating?: number } = {}) {
 	const source = new HocuspocusDocSource({
 		url: server.url,
 		access: options.access ?? (() => Promise.resolve('good')),
 		stores: memoryStores(options.disk ?? memoryDisk()),
 		primary: SPACE,
 		socketImpl: TestSocket,
-		batchSize: options.batchSize,
+		maxAuthenticating: options.maxAuthenticating,
 		minRetryMs: 50,
 		maxRetryMs: 200,
 	});
@@ -71,14 +71,14 @@ describe('HocuspocusDocSource', () => {
 		await eventually(() => expect(a.pending).toBe(0));
 	});
 
-	it('authenticates notes in batches, never more at once than the batch size', async () => {
+	it('never has more notes waiting for authentication than the limit', async () => {
 		server.authDelayMs = 20;
-		const a = device({ batchSize: 10 });
+		const a = device({ maxAuthenticating: 10 });
 		a.start();
 		a.open(SPACE);
 		const notes = Array.from({ length: 60 }, (_, i) => a.open(note(i + 1)));
 		await Promise.all(notes.map((n) => n.whenSynced()));
-		// The space document may be authenticating alongside the first batch.
+		// The space document may be authenticating alongside the first notes.
 		expect(server.maxPendingAuth).toBeLessThanOrEqual(11);
 		expect(notes.every((n) => n.synced)).toBe(true);
 	});

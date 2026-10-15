@@ -36,16 +36,19 @@ export interface HocuspocusOptions {
 	primary: string;
 	/** Socket implementation for environments without a global one (tests). */
 	socketImpl?: unknown;
-	/** Documents authenticated at once; the server limits pending ones per socket. */
-	batchSize?: number;
-	/** How long to wait for one batch before moving on. */
-	batchTimeoutMs?: number;
+	/**
+	 * Most documents waiting for authentication on the socket at once. The
+	 * server allows 50 and closes a socket with more than 100.
+	 */
+	maxAuthenticating?: number;
 	/** Reuse a sync token for this long; tokens are valid for ten minutes. */
 	tokenReuseMs?: number;
 	minRetryMs?: number;
 	maxRetryMs?: number;
 }
 
+/** Stays below the server's limit of 50 documents waiting for authentication. */
+const MAX_AUTHENTICATING = 40;
 /** After this many refused documents on one socket, stop asking: the server closes it at five. */
 const MAX_REFUSALS_PER_CONNECTION = 3;
 
@@ -69,7 +72,12 @@ class Entry implements OpenDoc {
 	readonly store: LocalStore;
 	readonly provider: HocuspocusProvider;
 	synced = false;
+	/** Refused even after a retry with a fresh token; not asked for again this session. */
 	refused = false;
+	/** Attached and waiting for the server to authenticate and sync it. */
+	authenticating = false;
+	/** The one retry with a fresh token after a refusal has been used. */
+	retried = false;
 	private waiters: Array<() => void> = [];
 
 	constructor(
@@ -78,6 +86,7 @@ class Entry implements OpenDoc {
 		socket: HocuspocusProviderWebsocket,
 		token: () => Promise<string>,
 		keepAlive: boolean,
+		private readonly halted: () => boolean,
 	) {
 		this.store = stores(name, this.doc);
 		this.provider = new HocuspocusProvider({
@@ -91,8 +100,12 @@ class Entry implements OpenDoc {
 		});
 	}
 
+	get confirmed(): boolean {
+		return this.synced && !this.refused && !this.provider.hasUnsyncedChanges;
+	}
+
 	whenSynced(): Promise<void> {
-		if (this.synced) {
+		if (this.synced || this.refused || this.halted()) {
 			return Promise.resolve();
 		}
 		return new Promise((resolve) => this.waiters.push(resolve));
@@ -100,6 +113,11 @@ class Entry implements OpenDoc {
 
 	markSynced(): void {
 		this.synced = true;
+		this.settle();
+	}
+
+	/** Lets everyone waiting for this document go on, synced or not. */
+	settle(): void {
 		const waiters = this.waiters;
 		this.waiters = [];
 		for (const resolve of waiters) {
@@ -110,8 +128,10 @@ class Entry implements OpenDoc {
 
 /**
  * Documents synced over one shared Hocuspocus socket. The primary document
- * (the space index) is attached first; other documents follow in batches once
- * it is synced, and again in batches after every reconnect.
+ * (the space index) is attached first; other documents follow once it is
+ * synced and the server has confirmed its changes, so a new note is listed
+ * in the space before it is opened. At most `maxAuthenticating` documents
+ * wait for authentication at a time, again after every reconnect.
  */
 export class HocuspocusDocSource implements DocSource {
 	state: ConnectionState = 'connecting';
@@ -119,25 +139,26 @@ export class HocuspocusDocSource implements DocSource {
 	private readonly entries = new Map<string, Entry>();
 	private readonly queue: string[] = [];
 	private readonly listeners = new Set<() => void>();
-	private readonly batchSize: number;
-	private readonly batchTimeoutMs: number;
+	private readonly maxAuthenticating: number;
 	private readonly tokenReuseMs: number;
 	private readonly minRetryMs: number;
 	private readonly maxRetryMs: number;
 	private token: { value: string; at: number } | null = null;
 	private tokenRequest: Promise<string> | null = null;
-	/** Bumped on every disconnect so stale batch loops stop. */
+	/** Bumped on every disconnect so work for an earlier socket stops. */
 	private generation = 0;
+	/** The generation whose attach loop is running, if any. */
+	private attachLoop: number | null = null;
+	/** Wakes the attach loop when something it may be waiting for changed. */
+	private wakers: Array<() => void> = [];
 	private refusalsThisConnection = 0;
 	private primaryRefusals = 0;
 	private retryMs: number;
 	private retryTimer: number | null = null;
-	private attaching = false;
 	private stopped = false;
 
 	constructor(private readonly options: HocuspocusOptions) {
-		this.batchSize = options.batchSize ?? 40;
-		this.batchTimeoutMs = options.batchTimeoutMs ?? 15_000;
+		this.maxAuthenticating = Math.min(options.maxAuthenticating ?? MAX_AUTHENTICATING, 50);
 		this.tokenReuseMs = options.tokenReuseMs ?? 8 * 60_000;
 		this.minRetryMs = options.minRetryMs ?? 1_000;
 		this.maxRetryMs = options.maxRetryMs ?? 60_000;
@@ -174,6 +195,16 @@ export class HocuspocusDocSource implements DocSource {
 		return count;
 	}
 
+	get refused(): number {
+		let count = 0;
+		for (const entry of this.entries.values()) {
+			if (entry.refused) {
+				count++;
+			}
+		}
+		return count;
+	}
+
 	onChange(listener: () => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
@@ -191,17 +222,31 @@ export class HocuspocusDocSource implements DocSource {
 			return existing;
 		}
 		const primary = name === this.options.primary;
-		const entry = new Entry(name, this.options.stores, this.socket, () => this.syncToken(), primary);
+		const entry = new Entry(
+			name,
+			this.options.stores,
+			this.socket,
+			() => this.syncToken(),
+			primary,
+			() => this.stopped,
+		);
 		entry.provider.on('synced', () => {
+			entry.authenticating = false;
 			entry.markSynced();
 			if (primary) {
 				this.primaryRefusals = 0;
 				this.retryMs = this.minRetryMs;
 				void this.attachQueued();
 			}
+			this.wake();
 			this.notify();
 		});
-		entry.provider.on('unsyncedChanges', () => this.notify());
+		entry.provider.on('unsyncedChanges', () => {
+			if (primary) {
+				this.wake();
+			}
+			this.notify();
+		});
 		entry.provider.on('authenticationFailed', () => this.onRefused(entry));
 		entry.provider.on('close', () => {
 			// The server closed this document while the socket stays open, as it
@@ -230,6 +275,8 @@ export class HocuspocusDocSource implements DocSource {
 		this.entries.delete(name);
 		this.removeFromQueue(name);
 		entry.provider.destroy();
+		entry.settle();
+		this.wake();
 		await entry.store.destroy();
 		entry.doc.destroy();
 		this.notify();
@@ -239,6 +286,7 @@ export class HocuspocusDocSource implements DocSource {
 		this.stopped = true;
 		this.clearRetry();
 		this.generation++;
+		this.settleAll();
 		const names = [...this.entries.keys()];
 		for (const name of names) {
 			await this.close(name);
@@ -298,6 +346,7 @@ export class HocuspocusDocSource implements DocSource {
 		// Reconnect on our own schedule, after checking access again.
 		this.socket.disconnect();
 		for (const entry of this.entries.values()) {
+			entry.authenticating = false;
 			if (entry.refused) {
 				// Detached now that the socket is closed, so no close message goes out.
 				if (entry.provider.isAttached) {
@@ -309,9 +358,13 @@ export class HocuspocusDocSource implements DocSource {
 			entry.provider.synced = false;
 			if (entry.name !== this.options.primary && entry.provider.isAttached) {
 				entry.provider.detach();
-				this.queue.push(entry.name);
+				if (!this.queue.includes(entry.name)) {
+					this.queue.push(entry.name);
+				}
 			}
 		}
+		// The attach loop of the closed socket stops waiting and exits.
+		this.wake();
 		if (!this.stopped && this.state !== 'refused' && this.state !== 'outdated') {
 			this.setState('offline');
 			this.scheduleRetry();
@@ -320,11 +373,10 @@ export class HocuspocusDocSource implements DocSource {
 	}
 
 	private onRefused(entry: Entry): void {
-		entry.refused = true;
+		entry.authenticating = false;
 		this.refusalsThisConnection++;
 		if (entry.name === this.options.primary) {
 			this.primaryRefusals++;
-			entry.refused = false;
 			if (this.primaryRefusals >= 2) {
 				// Refused again with a fresh token: this device has lost access.
 				this.halt('refused');
@@ -335,44 +387,109 @@ export class HocuspocusDocSource implements DocSource {
 			this.socket.disconnect();
 			return;
 		}
+		if (!entry.retried) {
+			// Ask once more with a fresh token: access may have changed since
+			// the token was issued, or the note was opened before the server
+			// saw it listed in the space.
+			entry.retried = true;
+			this.token = null;
+			this.queue.unshift(entry.name);
+			this.wake();
+			void this.attachQueued();
+			return;
+		}
 		// Left attached until the socket closes: a close message for a document
 		// the server never opened would count against this socket's limits.
-		entry.markSynced();
+		entry.refused = true;
+		entry.settle();
+		this.wake();
 		this.notify();
 	}
 
-	/** Attaches queued documents in batches, waiting for each batch to sync. */
+	/**
+	 * Attaches queued documents while the primary is synced, keeping at most
+	 * `maxAuthenticating` of them waiting for the server. One loop runs per
+	 * socket; a loop left from an earlier socket exits on its own.
+	 */
 	private async attachQueued(): Promise<void> {
-		const primary = this.entries.get(this.options.primary);
-		if (this.attaching || primary === undefined || !primary.synced) {
+		const generation = this.generation;
+		if (this.attachLoop === generation || this.stopped) {
 			return;
 		}
-		this.attaching = true;
-		const generation = this.generation;
+		this.attachLoop = generation;
 		try {
-			while (this.queue.length > 0 && generation === this.generation && !this.stopped) {
-				if (this.refusalsThisConnection >= MAX_REFUSALS_PER_CONNECTION) {
+			while (generation === this.generation && !this.stopped) {
+				const primary = this.entries.get(this.options.primary);
+				const next = this.queue[0];
+				if (primary === undefined || !primary.synced || next === undefined) {
 					break;
 				}
-				const batch = this.queue.splice(0, this.batchSize);
-				const waits: Promise<void>[] = [];
-				for (const name of batch) {
-					const entry = this.entries.get(name);
-					if (entry === undefined || entry.refused) {
-						continue;
-					}
-					entry.provider.attach();
-					waits.push(entry.whenSynced());
+				if (primary.provider.hasUnsyncedChanges || this.authenticatingCount() >= this.maxAuthenticating) {
+					// Wait for the server to confirm the space first, so every note
+					// opened below is already listed in it; or for a free slot.
+					await this.changed();
+					continue;
 				}
-				await Promise.race([
-					Promise.all(waits),
-					new Promise((resolve) => window.setTimeout(resolve, this.batchTimeoutMs)),
-				]);
+				if (this.refusalsThisConnection >= MAX_REFUSALS_PER_CONNECTION) {
+					// The server closes a socket after five refusals: carry on with a
+					// new one, where the documents still waiting get their turn.
+					this.socket.disconnect();
+					break;
+				}
+				this.queue.shift();
+				const entry = this.entries.get(next);
+				if (entry === undefined || entry.refused || entry.synced) {
+					continue;
+				}
+				entry.authenticating = true;
+				if (entry.provider.isAttached) {
+					// A retry after a refusal: the server forgot the document, so
+					// authenticate it again, with the fresh token, on the same socket.
+					void entry.provider.sendToken().then(() => {
+						if (entry.provider.isAttached) {
+							entry.provider.startSync();
+						}
+					});
+				} else {
+					entry.provider.attach();
+				}
 			}
 		} finally {
-			this.attaching = false;
+			if (this.attachLoop === generation) {
+				this.attachLoop = null;
+			}
 		}
 		this.notify();
+	}
+
+	private authenticatingCount(): number {
+		let count = 0;
+		for (const entry of this.entries.values()) {
+			if (entry.authenticating) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	/** Settles at the next wake. */
+	private changed(): Promise<void> {
+		return new Promise((resolve) => this.wakers.push(resolve));
+	}
+
+	private wake(): void {
+		const wakers = this.wakers;
+		this.wakers = [];
+		for (const resolve of wakers) {
+			resolve();
+		}
+	}
+
+	private settleAll(): void {
+		for (const entry of this.entries.values()) {
+			entry.settle();
+		}
+		this.wake();
 	}
 
 	private halt(state: 'refused' | 'outdated'): void {
@@ -381,6 +498,7 @@ export class HocuspocusDocSource implements DocSource {
 		this.generation++;
 		this.socket.disconnect();
 		this.setState(state);
+		this.settleAll();
 	}
 
 	private scheduleRetry(): void {

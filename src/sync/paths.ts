@@ -49,10 +49,14 @@ export function parentFolders(path: string): string[] {
  * "Ideas (conflict 2026-10-15).md", then "Ideas (conflict 2026-10-15 2).md".
  */
 export function conflictPath(rel: string, date: Date, taken: (rel: string) => boolean): string {
+	return sparePath(rel, `conflict ${date.toISOString().slice(0, 10)}`, taken);
+}
+
+/** A free path next to `rel` with `label` in parentheses, such as "Ideas (moving).md". */
+export function sparePath(rel: string, label: string, taken: (rel: string) => boolean): string {
 	const stem = rel.slice(0, -'.md'.length);
-	const day = date.toISOString().slice(0, 10);
 	for (let n = 1; ; n++) {
-		const candidate = `${stem} (conflict ${day}${n > 1 ? ` ${n}` : ''}).md`;
+		const candidate = `${stem} (${label}${n > 1 ? ` ${n}` : ''}).md`;
 		if (!taken(candidate)) {
 			return candidate;
 		}
