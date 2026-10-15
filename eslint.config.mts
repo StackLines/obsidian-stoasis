@@ -72,7 +72,7 @@ export default defineConfig(
 		},
 	},
 	{
-		files: ['test/settings.test.ts'],
+		files: ['test/settings.test.ts', 'test/review-regressions.test.ts'],
 		rules: {
 			// The tab still renders through display() for apps older than 1.13.
 			'@typescript-eslint/no-deprecated': 'off',
