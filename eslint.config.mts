@@ -48,10 +48,27 @@ export default defineConfig(
 		},
 	},
 	{
+		files: ['test/**/*.ts'],
+		rules: {
+			// Tests run in Node, where the global object is the only window there is.
+			'obsidianmd/prefer-window-timers': 'off',
+			'obsidianmd/no-global-this': 'off',
+			// The stub vault implements delete; nothing is trashed in tests.
+			'obsidianmd/prefer-file-manager-trash-file': 'off',
+		},
+	},
+	{
 		files: ['src/settings.ts'],
 		rules: {
 			// The declarative settings API needs app 1.13; the manifest minimum is lower.
 			'obsidianmd/settings-tab/prefer-setting-definitions': 'off',
+		},
+	},
+	{
+		files: ['src/settings.ts', 'src/main.ts'],
+		rules: {
+			// display() and setWarning() are what apps older than 1.13 have.
+			'@typescript-eslint/no-deprecated': 'off',
 		},
 	},
 	{

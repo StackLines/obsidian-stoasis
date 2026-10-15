@@ -3,9 +3,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// Guards for code that ships in main.js. The plugin runs on mobile, makes no
-// network requests in this version, and follows the community plugin
-// guidelines, so these patterns must not appear under src/.
+// Guards for code that ships in main.js. The plugin runs on mobile and follows
+// the community plugin guidelines, so these patterns must not appear under
+// src/. Network access goes through two doors only: HTTP requests through
+// Obsidian's requestUrl in src/http.ts, and the sync socket through the
+// Hocuspocus provider, which opens it itself.
 
 const SRC = fileURLToPath(new URL('../src', import.meta.url));
 
@@ -19,8 +21,10 @@ function sourceFiles(dir: string): string[] {
 	});
 }
 
+const HTTP_DOOR = join(SRC, 'http.ts');
+
 const FORBIDDEN: Array<[string, RegExp]> = [
-	['network request', /\b(?:fetch|requestUrl|request)\s*\(/],
+	['network request', /\b(?:fetch|request)\s*\(/],
 	['network API', /\b(?:WebSocket|XMLHttpRequest|EventSource|sendBeacon)\b/],
 	['Node or Electron module', /from\s+['"](?:node:|fs|path|os|crypto|child_process|electron)['"/]/],
 	['require call', /\brequire\s*\(/],
@@ -36,6 +40,11 @@ describe('shipped source', () => {
 
 	it('finds the source files', () => {
 		expect(files.length).toBeGreaterThan(0);
+	});
+
+	it('makes HTTP requests in one place only', () => {
+		const callers = files.filter((file) => /\brequestUrl\s*\(/.test(readFileSync(file, 'utf8')));
+		expect(callers).toEqual([HTTP_DOOR]);
 	});
 
 	for (const [label, pattern] of FORBIDDEN) {
