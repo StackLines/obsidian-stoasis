@@ -74,6 +74,52 @@ export function diffText(a: string, b: string): TextEdit[] {
 	return edits;
 }
 
+/** Share of a text that counts as most of it. */
+const MOST = 0.9;
+
+/**
+ * Whether going from `before` to `after` removes most of a non-empty
+ * `before`, counting whole lines.
+ */
+export function replacesMost(before: string, after: string): boolean {
+	if (before === '' || before === after) {
+		return false;
+	}
+	return removedLength(before, after) >= before.length * MOST;
+}
+
+/**
+ * How much of `a` going to `b` removes, counting whole lines: lines `b`
+ * still has are kept, wherever single characters happen to match. When the
+ * texts differ too much to compare line by line, everything between their
+ * common start and end counts as removed.
+ */
+function removedLength(a: string, b: string): number {
+	let start = 0;
+	const minLength = Math.min(a.length, b.length);
+	while (start < minLength && a.charCodeAt(start) === b.charCodeAt(start)) {
+		start++;
+	}
+	let endA = a.length;
+	let endB = b.length;
+	while (endA > start && endB > start && a.charCodeAt(endA - 1) === b.charCodeAt(endB - 1)) {
+		endA--;
+		endB--;
+	}
+	const linesA = splitLines(a.slice(start, endA));
+	const hunks = diffSequences(linesA, splitLines(b.slice(start, endB)), MAX_LINE_EDITS);
+	if (hunks === null) {
+		return endA - start;
+	}
+	let removed = 0;
+	for (const hunk of hunks) {
+		for (let i = hunk.aStart; i < hunk.aEnd; i++) {
+			removed += linesA[i]?.length ?? 0;
+		}
+	}
+	return removed;
+}
+
 /** Character-level edits between two short strings, by code point. */
 function diffChars(a: string, b: string, base: number): TextEdit[] {
 	const pointsA = Array.from(a);
