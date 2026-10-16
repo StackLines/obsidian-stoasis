@@ -299,9 +299,27 @@ export class FakeVault implements VaultAdapter {
 		this.emit((l) => l.fileRenamed(to, from));
 	}
 
-	/** Whether, ignoring case, another name for `path` is taken. */
+	/**
+	 * Whether, ignoring case, another name for `path`, or for one of its
+	 * folders, is taken: a file system that ignores case finds it there.
+	 */
 	private inOtherCase(path: string): boolean {
-		return this.ignoresCase && [...this.files.keys()].some((p) => p !== path && p.toLowerCase() === path.toLowerCase());
+		if (!this.ignoresCase) {
+			return false;
+		}
+		const parts = path.split('/');
+		return [...this.files.keys()].some((other) => {
+			const otherParts = other.split('/');
+			for (let i = 0; i < Math.min(parts.length, otherParts.length); i++) {
+				const a = parts[i] as string;
+				const b = otherParts[i] as string;
+				if (a !== b) {
+					const sameKind = (i === parts.length - 1) === (i === otherParts.length - 1);
+					return sameKind && a.toLowerCase() === b.toLowerCase();
+				}
+			}
+			return false;
+		});
 	}
 
 	private async io(op: VaultOperation, path: string): Promise<void> {

@@ -434,6 +434,123 @@ describe('first start on a device new to the space', () => {
 	});
 });
 
+/**
+ * Two notes whose names differ only in letter case, made where the file
+ * system tells them apart, cannot both be on a device whose file system
+ * does not, as on macOS, iOS and Windows.
+ */
+describe('notes whose names differ only in letter case', () => {
+	const index = (hub: MemoryHub) =>
+		hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+
+	it('skips the one that cannot be here, reports it once, and syncs the rest', async () => {
+		const [hub, a, b] = await pair();
+		b.vault.ignoresCase = true;
+		a.vault.write('Synced/A.md', 'upper');
+		await settle(a, b);
+		a.vault.write('Synced/a.md', 'lower');
+		a.vault.write('Synced/Z.md', 'zed');
+		await settle(a, b);
+		b.vault.write('Synced/A.md', 'upper, edited on b');
+		await settle(a, b);
+
+		expect(b.files()).toEqual({ 'Synced/A.md': 'upper, edited on b', 'Synced/Z.md': 'zed' });
+		expect(a.files()).toEqual({ 'Synced/A.md': 'upper, edited on b', 'Synced/Z.md': 'zed', 'Synced/a.md': 'lower' });
+		const ids = index(hub);
+		expect(Object.keys(ids).sort()).toEqual(['A.md', 'Z.md', 'a.md']);
+		expect(ids['A.md']!.id).not.toBe(ids['a.md']!.id);
+		expect(hub.text(noteDocName(ids['a.md']!.id))).toBe('lower');
+		expect(b.problems).toEqual([
+			'"a.md" was not downloaded to this device: "A.md" is already here, and the two names differ only in ' +
+				'letter case, which the files on this device cannot tell apart. Rename one of them to have both here.',
+		]);
+		expect(a.problems).toEqual([]);
+
+		// Renamed on the other device, it arrives.
+		a.vault.move('Synced/a.md', 'Synced/a (lower).md');
+		await settle(a, b);
+		expect(b.files()['Synced/a (lower).md']).toBe('lower');
+		expect(b.problems).toHaveLength(1);
+	});
+
+	it('downloads all the rest to a new device, which then has every note it can', async () => {
+		const hub = new MemoryHub();
+		const a = new Device(hub);
+		await a.start();
+		a.vault.write('Synced/A.md', 'upper');
+		a.vault.write('Synced/a.md', 'lower');
+		a.vault.write('Synced/Z.md', 'zed');
+		await settle(a);
+
+		const b = new Device(hub);
+		b.vault.ignoresCase = true;
+		await b.start();
+		await settle(a, b);
+		const files = b.files();
+		expect(files['Synced/Z.md']).toBe('zed');
+		const here = Object.keys(files).filter((path) => path.toLowerCase() === 'synced/a.md');
+		expect(here).toHaveLength(1);
+		expect(files[here[0]!]).toBe(here[0] === 'Synced/A.md' ? 'upper' : 'lower');
+		expect(b.problems).toHaveLength(1);
+		expect(b.engine.progress()).toEqual({ listed: 2, present: 2 });
+		expect(hub.text(noteDocName(index(hub)['A.md']!.id))).toBe('upper');
+		expect(hub.text(noteDocName(index(hub)['a.md']!.id))).toBe('lower');
+	});
+
+	it('keeps a file of its own here whose name differs only in case, and both notes', async () => {
+		const hub = new MemoryHub();
+		const a = new Device(hub);
+		await a.start();
+		a.vault.write('Synced/A.md', 'from a');
+		a.vault.write('Synced/Z.md', 'zed');
+		await settle(a);
+
+		const b = new Device(hub);
+		b.vault.ignoresCase = true;
+		b.vault.files.set('Synced/a.md', 'only on b');
+		await b.start();
+		await settle(a, b);
+
+		expect(b.files()).toEqual({ 'Synced/Z.md': 'zed', 'Synced/a.md': 'only on b' });
+		expect(Object.keys(index(hub)).sort()).toEqual(['A.md', 'Z.md', 'a.md']);
+		expect(hub.text(noteDocName(index(hub)['A.md']!.id))).toBe('from a');
+		expect(hub.text(noteDocName(index(hub)['a.md']!.id))).toBe('only on b');
+		expect(a.files()['Synced/a.md']).toBe('only on b');
+		expect(b.problems).toEqual([
+			'"A.md" was not downloaded to this device: "a.md" is already here, and the two names differ only in ' +
+				'letter case, which the files on this device cannot tell apart. Rename one of them to have both here.',
+		]);
+	});
+
+	it('skips the notes of a folder whose name differs only in case, with one report for the folder', async () => {
+		const [hub, a, b] = await pair();
+		b.vault.ignoresCase = true;
+		a.vault.write('Synced/Notes/one.md', 'one');
+		await settle(a, b);
+		a.vault.write('Synced/notes/two.md', 'two');
+		a.vault.write('Synced/notes/three.md', 'three');
+		a.vault.write('Synced/Z.md', 'zed');
+		await settle(a, b);
+
+		expect(b.files()).toEqual({ 'Synced/Notes/one.md': 'one', 'Synced/Z.md': 'zed' });
+		expect(Object.keys(index(hub)).sort()).toEqual(['Notes/one.md', 'Z.md', 'notes/three.md', 'notes/two.md']);
+		expect(b.problems).toEqual([
+			'Notes in the folder "notes" were not downloaded to this device: the folder "Notes" is already here, ' +
+				'and the two names differ only in letter case, which the files on this device cannot tell apart. ' +
+				'Rename one of them to have both here.',
+		]);
+	});
+
+	it('creates both where the file system tells them apart', async () => {
+		const [, a, b] = await pair();
+		a.vault.write('Synced/A.md', 'upper');
+		a.vault.write('Synced/a.md', 'lower');
+		await settle(a, b);
+		expect(b.files()).toEqual({ 'Synced/A.md': 'upper', 'Synced/a.md': 'lower' });
+		expect(b.problems).toEqual([]);
+	});
+});
+
 describe('parseEngineState', () => {
 	it('keeps only valid entries', () => {
 		expect(

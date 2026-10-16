@@ -42,6 +42,9 @@ between a conflict copy and its note.
 - Renaming a note so that only the case of its name changes (`note.md` to
   `Note.md`) failed on devices whose file system ignores case, as on macOS,
   iOS and Windows.
+- Two notes whose names differ only in case stopped every later note from
+  arriving on a device whose file system ignores case. That device now skips
+  the one it cannot keep, with a warning, and syncs the rest.
 - Text typed in a note open in an editor while the note was renamed could be
   added to the note twice.
 - An editor that reloaded a note's file while edits from another device were
