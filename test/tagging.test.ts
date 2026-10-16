@@ -4,6 +4,8 @@ import { readPatch } from '../src/frontmatter-patch';
 import {
 	MAX_TAG_TEXT,
 	applyToFrontmatter,
+	reviewedFrontmatter,
+	stillReviewed,
 	describeContractError,
 	describeMatch,
 	propose,
@@ -132,5 +134,19 @@ describe('limits', () => {
 		expect(tooLongToTag('a'.repeat(MAX_TAG_TEXT))).toBe(false);
 		expect(tooLongToTag('a'.repeat(MAX_TAG_TEXT + 1))).toBe(true);
 		expect(tooLongToTag('é'.repeat(MAX_TAG_TEXT / 2 + 1))).toBe(true);
+	});
+});
+
+describe('stillReviewed', () => {
+	it('tells a changed frontmatter from the one a proposal was made for, whatever the key order', () => {
+		const reviewed = reviewedFrontmatter({ title: 'Plans', 'brain-people': ['[[Alice Stone]]'], meta: { a: 1, b: 2 } });
+		expect(stillReviewed({ meta: { b: 2, a: 1 }, 'brain-people': ['[[Alice Stone]]'], title: 'Plans' }, reviewed)).toBe(
+			true,
+		);
+		expect(
+			stillReviewed({ title: 'Plans', 'brain-people': ['[[Alice Stone]]', '[[Bob Example]]'], meta: { a: 1, b: 2 } }, reviewed),
+		).toBe(false);
+		expect(stillReviewed({ title: 'Plans', 'brain-people': ['[[Alice Stone]]'] }, reviewed)).toBe(false);
+		expect(stillReviewed({}, reviewedFrontmatter({}))).toBe(true);
 	});
 });

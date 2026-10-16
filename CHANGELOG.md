@@ -15,8 +15,9 @@ between a conflict copy and its note.
 - **Tag this note now**, from the command palette or the editor menu of a
   Markdown note. Your server suggests tags and properties for the note's text
   and keeps nothing; a window shows each proposed change and where it came
-  from, and **Apply** writes them into the frontmatter. It works for notes
-  that are not synced, on a device that is only paired.
+  from, and **Apply** writes them into the frontmatter, unless the note's
+  properties changed since the suggestion. It works for notes that are not
+  synced, on a device that is only paired.
 - Frontmatter changes follow version 2 of the tagging contract: new
   properties, base properties that are only ever filled in, task and open
   point lists that are replaced, and the new order of added properties.

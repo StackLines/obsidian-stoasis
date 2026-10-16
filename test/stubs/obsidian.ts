@@ -456,6 +456,27 @@ export function splitFrontmatter(text: string): { frontmatter: Record<string, un
 	return { frontmatter, body: text.slice(match[0].length) };
 }
 
+/** Where a note's frontmatter is, as the app finds it. */
+export function getFrontMatterInfo(content: string): {
+	exists: boolean;
+	frontmatter: string;
+	from: number;
+	to: number;
+	contentStart: number;
+} {
+	const match = /^---\n([\s\S]*?)\n?---\n/.exec(content);
+	if (match === null) {
+		return { exists: false, frontmatter: '', from: 0, to: 0, contentStart: 0 };
+	}
+	const yaml = match[1] ?? '';
+	return { exists: true, frontmatter: yaml, from: 4, to: 4 + yaml.length, contentStart: match[0].length };
+}
+
+/** Reads the simple YAML the stub writes. */
+export function parseYaml(yaml: string): unknown {
+	return splitFrontmatter(`---\n${yaml}\n---\n`).frontmatter;
+}
+
 export class MetadataCache {
 	private readonly frontmatter = new Map<string, Record<string, unknown>>();
 	getFileCache(file: TFile): { frontmatter?: Record<string, unknown> } | null {

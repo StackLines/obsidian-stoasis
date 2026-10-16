@@ -1,4 +1,15 @@
-import { MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, type Editor } from 'obsidian';
+import {
+	getFrontMatterInfo,
+	MarkdownView,
+	Notice,
+	parseYaml,
+	Platform,
+	Plugin,
+	TAbstractFile,
+	TFile,
+	TFolder,
+	type Editor,
+} from 'obsidian';
 import { ApiError, NotesApi } from './api';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
@@ -36,7 +47,14 @@ import { checkCompatibility, describeIncompatibility } from './version';
 import { folderProbe, obsidianVault } from './vault';
 import { checkFolder, describeRisk, warningKey } from './folder-warnings';
 import { TagModal } from './tag-modal';
-import { applyToFrontmatter, propose, stampDate, tooLongToTag } from './tagging';
+import {
+	applyToFrontmatter,
+	propose,
+	reviewedFrontmatter,
+	stampDate,
+	stillReviewed,
+	tooLongToTag,
+} from './tagging';
 import type { PropertyPatch } from './frontmatter-patch';
 import {
 	conflictOriginal,
@@ -59,6 +77,23 @@ const SPACE_RETRY_MS = 30_000;
 const REVOKE_RETRY_MS = 10 * 60_000;
 /** How long to wait before showing how far a download has come. */
 const DOWNLOAD_UPDATE_MS = 250;
+
+/** Thrown inside processFrontMatter to write nothing when a tag proposal is out of date. */
+class StaleProposal extends Error {}
+
+/** The properties in a note's text, as the app reads them; none when there are none or they cannot be read. */
+function propertiesOf(markdown: string): Record<string, unknown> {
+	const info = getFrontMatterInfo(markdown);
+	if (!info.exists) {
+		return {};
+	}
+	try {
+		const value: unknown = parseYaml(info.frontmatter);
+		return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	} catch {
+		return {};
+	}
+}
 
 interface Session {
 	source: HocuspocusDocSource;
@@ -479,7 +514,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	 * Asks the server for properties for the note's text and shows what would
 	 * change. Any note can be tagged, synced or not, once the device is paired.
 	 */
-	async tagNote(file: TFile, editor: Pick<Editor, 'getValue'>): Promise<void> {
+	async tagNote(file: TFile, editor: Pick<Editor, 'getValue'>, again = false): Promise<void> {
 		if (getPairingState(this.settings) !== 'paired') {
 			new Notice('Pair this device with a server first, in the plugin settings.');
 			return;
@@ -505,27 +540,60 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		} finally {
 			asking.hide();
 		}
-		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
+		// The proposal is for the properties in the text that was sent.
+		const frontmatter = propertiesOf(markdown);
+		const reviewed = reviewedFrontmatter(frontmatter);
 		const proposal = propose(frontmatter, suggestion, stampDate(new Date()));
 		const patch = proposal.patch;
-		new TagModal(this.app, file.basename, proposal, () =>
-			patch === null ? Promise.resolve(false) : this.applyTags(file, patch),
-		).open();
+		new TagModal(this.app, file.basename, proposal, async () => {
+			if (patch === null) {
+				return false;
+			}
+			// The open editor may have properties not saved yet, which the file does not show.
+			const result = stillReviewed(propertiesOf(editor.getValue()), reviewed)
+				? await this.applyTags(file, patch, reviewed)
+				: 'stale';
+			if (result === 'stale') {
+				// The proposal was for other properties: ask again for the note as it is now, once.
+				new Notice(
+					`The properties of "${file.basename}" changed since the suggestion, so nothing was written.` +
+						(again ? ' Run "Tag this note now" again.' : ' Asking for a new suggestion.'),
+				);
+				if (!again) {
+					void this.tagNote(file, editor, true);
+				}
+			}
+			return result !== 'failed';
+		}).open();
 	}
 
-	/** Writes the patch into the note's frontmatter as it is now. */
-	private async applyTags(file: TFile, patch: PropertyPatch): Promise<boolean> {
+	/**
+	 * Writes the patch into the note's frontmatter, only if it is still the
+	 * frontmatter the proposal was made for: checked inside processFrontMatter,
+	 * so nothing written meanwhile is lost.
+	 */
+	private async applyTags(
+		file: TFile,
+		patch: PropertyPatch,
+		reviewed: string,
+	): Promise<'tagged' | 'unchanged' | 'stale' | 'failed'> {
 		let changed = false;
 		try {
 			await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+				if (!stillReviewed(frontmatter, reviewed)) {
+					throw new StaleProposal();
+				}
 				changed = applyToFrontmatter(frontmatter, patch, stampDate(new Date()));
 			});
 		} catch (error) {
+			if (error instanceof StaleProposal) {
+				return 'stale';
+			}
 			new Notice(`Stoasis could not write the properties: ${error instanceof Error ? error.message : String(error)}`);
-			return false;
+			return 'failed';
 		}
 		new Notice(changed ? `Tagged "${file.basename}".` : 'Nothing to add: the note already has these properties.');
-		return true;
+		return changed ? 'tagged' : 'unchanged';
 	}
 
 	// Pairing.

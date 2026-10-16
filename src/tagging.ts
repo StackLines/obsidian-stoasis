@@ -74,6 +74,35 @@ export function propose(
 }
 
 /**
+ * The frontmatter a proposal was made for, to tell later whether it is still
+ * the same. The server's lists replace the note's, so a proposal made before
+ * the frontmatter changed could drop what was added since.
+ */
+export function reviewedFrontmatter(frontmatter: Record<string, unknown>): string {
+	return JSON.stringify(sorted(frontmatter));
+}
+
+/** Whether the frontmatter is still the one a proposal was made for. */
+export function stillReviewed(frontmatter: Record<string, unknown>, reviewed: string): boolean {
+	return reviewedFrontmatter(frontmatter) === reviewed;
+}
+
+/** A value with its object keys in order, so key order does not count as a change. */
+function sorted(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(sorted);
+	}
+	if (value !== null && typeof value === 'object') {
+		return Object.fromEntries(
+			Object.keys(value)
+				.sort()
+				.map((key) => [key, sorted((value as Record<string, unknown>)[key])]),
+		);
+	}
+	return value;
+}
+
+/**
  * Applies the patch inside `processFrontMatter`, which hands over the note's
  * frontmatter as it is now: keys are rewritten in the contract's order. True
  * when anything changed.

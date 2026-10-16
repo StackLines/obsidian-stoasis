@@ -12,7 +12,7 @@ import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { SyncEngine, emptyEngineState, type EngineState } from '../src/sync/engine';
 import { replacesMost, setText } from '../src/sync/text';
 import { readPatch } from '../src/frontmatter-patch';
-import { applyToFrontmatter } from '../src/tagging';
+import { applyToFrontmatter, reviewedFrontmatter, stillReviewed } from '../src/tagging';
 import { splitFrontmatter } from './stubs/obsidian';
 import { keepSyncedNote, useConflictCopy, type Compared, type ConflictFiles } from '../src/conflict';
 import * as Y from 'yjs';
@@ -670,10 +670,22 @@ describe('a base metadata stamp arriving while the note is open', () => {
 const TAG_PATCH = readPatch({ tags_add: ['daily'], set: { 'brain-type': 'journal' }, actor: 'agent' })!;
 const TAGGED = 'tags:\n  - daily\nbrain-type: journal\nbrain-tagged: 2026-10-16 by agent\n';
 
-async function tagOnDisk(device: Device, path: string): Promise<string> {
-	let written = '';
+/**
+ * Tags the note on disk, as the plugin does inside processFrontMatter. With
+ * `reviewed`, the frontmatter the proposal was made for, nothing is written
+ * unless the note, and the open `pane`, still have it: then the result is null.
+ */
+async function tagOnDisk(device: Device, path: string, reviewed?: string, pane?: Pane): Promise<string | null> {
+	// The plugin checks the open editor's properties first: they may not be saved yet.
+	if (reviewed !== undefined && pane !== undefined && !stillReviewed(splitFrontmatter(pane.text()).frontmatter, reviewed)) {
+		return null;
+	}
+	let written: string | null = null;
 	await device.vault.process(path, (text) => {
 		const { frontmatter, body } = splitFrontmatter(text);
+		if (reviewed !== undefined && !stillReviewed(frontmatter, reviewed)) {
+			return text;
+		}
 		applyToFrontmatter(frontmatter, TAG_PATCH, '2026-10-16');
 		const yaml = Object.entries(frontmatter)
 			.map(([key, value]) =>
@@ -822,7 +834,7 @@ describe('tagging a note while it is open', () => {
 			pane.save();
 			await settle(a, b);
 
-			const written = await tagOnDisk(a, 'Notes/A.md');
+			const written = (await tagOnDisk(a, 'Notes/A.md')) as string;
 			reload(pane, written);
 			pane.typeHere(' and sunny');
 			await settle(a, b);
@@ -859,7 +871,7 @@ describe('tagging a note while it is open', () => {
 			await settle(a, b);
 			const fromB = (ORIGINAL['Notes/A.md'] as string).replace('- Next day', '- Next day\n- Notes from B');
 			b.vault.write('Notes/A.md', fromB);
-			const written = await tagOnDisk(a, 'Notes/A.md');
+			const written = (await tagOnDisk(a, 'Notes/A.md')) as string;
 			pane.load(written);
 			// B's line reaches this device, and its disk, before the editor updates again.
 			await settle(a, b);
@@ -880,6 +892,40 @@ describe('tagging a note while it is open', () => {
 			pane.close();
 		});
 	}
+
+	it('writes nothing for a proposal made before the other device changed the properties', async () => {
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		// The proposal is made for the note as it is: no frontmatter.
+		const reviewed = reviewedFrontmatter(splitFrontmatter(pane.text()).frontmatter);
+		const fromB = `---\nbrain-people:\n  - [[Bob Example]]\n---\n${ORIGINAL['Notes/A.md'] as string}`;
+		b.vault.write('Notes/A.md', fromB);
+		await settle(a, b);
+		expect(pane.text()).toBe(fromB);
+		pane.select(pane.text().indexOf('A quiet') + 'A quiet'.length);
+		pane.typeHere(', calm');
+
+		// The editor has the new properties; the file may not have them yet.
+		expect(await tagOnDisk(a, 'Notes/A.md', reviewed, pane)).toBeNull();
+		pane.save();
+		await settle(a, b);
+		// Once saved, the file has them too.
+		expect(await tagOnDisk(a, 'Notes/A.md', reviewed)).toBeNull();
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+
+		const expected = fromB.replace('A quiet day.', 'A quiet, calm day.');
+		expect(pane.text()).toBe(expected);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+		expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		pane.close();
+	});
 });
 
 /**
