@@ -32,7 +32,16 @@ export interface VaultAdapter {
 	rename(from: string, to: string): Promise<void>;
 	/** Moves a file to the trash, where the user can still recover it. */
 	trash(path: string): Promise<void>;
+	/**
+	 * False when the file system tells names apart by letter case alone, so
+	 * "note.md" and "Note.md" can both be there. True, or left out, when it
+	 * may not.
+	 */
+	readonly ignoresCase?: boolean;
 }
+
+/** Added to the notice for a conflict copy: how to choose between it and the note. */
+const COMPARE_HINT = ' Open the copy and run "Compare with the synced note" to keep one of them.';
 
 /** What the engine remembers between sessions, per mapped folder. */
 export interface EngineState {
@@ -88,19 +97,33 @@ export interface EngineOptions {
 
 /** A link between an open editor and a note's shared text. */
 export interface NoteLink {
+	/** The note's id: the same for every link to it, under any name. */
+	readonly id: string;
 	readonly text: Y.Text;
 	/**
 	 * Merges the editor's text, which may predate remote changes, into the
-	 * note. Refuses, and reports it, when that would replace most of the
-	 * note's text.
+	 * note. `loaded` is the file's text the app last loaded into the editor,
+	 * when known: the merge starts from the state the file had then, so text
+	 * that reached the file after the load is not taken as deleted. `since`,
+	 * when given, is the state the editor last matched, from `snapshot`, and
+	 * the merge starts there instead. Refuses, and reports it, when that would
+	 * replace most of the note's text.
 	 */
-	adopt(editorText: string): void;
+	adopt(editorText: string, loaded?: string | null, since?: MergeBase | null): void;
+	/** The note's state now, to merge from later with `adopt`. */
+	snapshot(): MergeBase;
 	/**
 	 * Whether `text` is this note's file as this device knows it: on disk
 	 * when linked, as last synced, or as the note holds it now.
 	 */
 	owns(text: string): boolean;
 	release(): void;
+}
+
+/** A text loaded into an editor, and the base that matches it once known. */
+interface LoadPin {
+	text: string;
+	base: MergeBase | null;
 }
 
 interface IndexEntry {
@@ -114,6 +137,8 @@ interface Note {
 	text: Y.Text;
 	/** State matching the text on disk, to merge disk edits against. */
 	base: MergeBase | null;
+	/** The few bases before it, newest first, for an editor loaded from an older file. */
+	earlier: MergeBase[];
 	/**
 	 * Changed on this device since the server last confirmed the note while
 	 * the space still listed it. Kept across restarts.
@@ -129,6 +154,8 @@ interface Note {
 const ENGINE = Symbol('stoasis-engine');
 const BASE_KEY = 'base';
 const DIRTY_KEY = 'dirty';
+/** How many earlier bases a note keeps in memory. */
+const EARLIER_BASES = 4;
 /** Kept with the space document once it holds the server's index. */
 const SEEDED_KEY = 'seeded';
 /**
@@ -158,8 +185,21 @@ export class SyncEngine {
 	private index: OpenDoc | null = null;
 	private map: Y.Map<unknown> | null = null;
 	private readonly notes = new Map<string, Note>();
+	/**
+	 * Texts the app loaded into editors that have not linked again yet, by
+	 * note id, with the base each was loaded at once known. Kept until the
+	 * editor links, however many bases come after.
+	 */
+	private readonly loads = new Map<string, LoadPin[]>();
 	/** Moves the engine made, as "from\0to", until their vault events arrive. */
 	private readonly ownMoves = new Set<string>();
+	/**
+	 * Notes left where they are, or not created here, because their path
+	 * differs from another one here only in letter case: note id → the
+	 * problem reported for it, reported once.
+	 */
+	private readonly clashes = new Map<string, string>();
+	private readonly reportedClashes = new Set<string>();
 	private queue: Promise<void> = Promise.resolve();
 	private stopped = false;
 	private started = false;
@@ -192,7 +232,8 @@ export class SyncEngine {
 
 	/** How many notes the space lists, and how many of them are files here. */
 	progress(): { listed: number; present: number } {
-		const listed = new Set(this.entries().map(([, entry]) => entry.id));
+		// A note that cannot have a file here is not waited for.
+		const listed = new Set(this.entries().map(([, entry]) => entry.id).filter((id) => !this.clashes.has(id)));
 		let present = 0;
 		for (const id of new Set(Object.values(this.state.known))) {
 			if (listed.has(id)) {
@@ -323,7 +364,10 @@ export class SyncEngine {
 	fileDeleted(path: string): void {
 		const rel = this.relative(path);
 		if (rel !== null) {
-			void this.enqueue(() => this.diskDeleted(rel));
+			void this.enqueue(async () => {
+				await this.diskDeleted(rel);
+				await this.retryClashes();
+			});
 		}
 	}
 
@@ -347,6 +391,7 @@ export class SyncEngine {
 			} else if (from !== null && to !== null) {
 				this.diskRenamed(from, to);
 			}
+			await this.retryClashes();
 		});
 	}
 
@@ -372,6 +417,39 @@ export class SyncEngine {
 		return rel !== null && this.state.known[rel] !== undefined;
 	}
 
+	/** The id of the note this engine syncs at a vault path, if any. */
+	noteAt(path: string): string | undefined {
+		const rel = this.relative(path);
+		return rel === null ? undefined : this.state.known[rel];
+	}
+
+	/**
+	 * Keeps the base matching `text`, which the app loaded into an editor
+	 * showing `path`, until the returned function is called: the editor
+	 * merges against it when it links again.
+	 */
+	pin(path: string, text: string): () => void {
+		const rel = this.relative(path);
+		const id = rel === null ? undefined : this.state.known[rel];
+		if (id === undefined) {
+			return () => undefined;
+		}
+		const note = this.notes.get(id);
+		const base = note === undefined ? null : ([note.base, ...note.earlier].find((b) => b?.text === text) ?? null);
+		const load: LoadPin = { text, base };
+		const loads = this.loads.get(id) ?? [];
+		loads.push(load);
+		this.loads.set(id, loads);
+		return () => {
+			const rest = (this.loads.get(id) ?? []).filter((l) => l !== load);
+			if (rest.length > 0) {
+				this.loads.set(id, rest);
+			} else {
+				this.loads.delete(id);
+			}
+		};
+	}
+
 	/**
 	 * Links an open editor to the note at `path`, or returns null when the
 	 * file is not synced. While linked, the editor writes the file and the
@@ -394,20 +472,23 @@ export class SyncEngine {
 		note.editors++;
 		let released = false;
 		return {
+			id: note.id,
 			text: note.text,
-			adopt: (editorText) => {
+			snapshot: () => captureBase(note.open.doc, NOTE_FIELD),
+			adopt: (editorText, loaded, since) => {
 				const current = note.text.toJSON();
 				if (editorText === current) {
 					return;
 				}
-				if (note.base === null && current !== '' && editorText !== '') {
+				const base = since ?? this.baseFor(note, loaded, disk);
+				if (base === null && current !== '' && editorText !== '') {
 					// Nothing on this device says how the two relate: show the
 					// note's text, and keep the editor's as a note of its own.
 					const at = this.relOf(note.id) ?? rel ?? 'Untitled.md';
 					void this.enqueue(() => this.keepCopy(at, editorText));
 					return;
 				}
-				if (replacesMost(current, this.mergedText(note, editorText))) {
+				if (replacesMost(current, this.mergedText(note, editorText, base))) {
 					// Nobody typed this: an editor that still shows another
 					// note's text must not replace this one. Show the note's.
 					this.options.onProblem?.(
@@ -415,7 +496,11 @@ export class SyncEngine {
 					);
 					return;
 				}
-				this.mergeDisk(note, editorText, false);
+				if (base === note.base) {
+					this.mergeDisk(note, editorText, false);
+				} else if (base !== null) {
+					mergeOutsideEdit(note.open.doc, NOTE_FIELD, base, editorText, ENGINE);
+				}
 			},
 			owns: (text) => text === disk || text === note.base?.text || text === note.text.toJSON(),
 			release: () => {
@@ -423,6 +508,12 @@ export class SyncEngine {
 					released = true;
 					note.editors--;
 					if (note.editors === 0) {
+						// The app saves what the editor showed as it lets go: remember
+						// the state that holds it, so that save merges as no change.
+						const shown = captureBase(note.open.doc, NOTE_FIELD);
+						if (note.base?.text !== shown.text) {
+							note.earlier = [shown, ...note.earlier.filter((b) => b.text !== shown.text)].slice(0, EARLIER_BASES);
+						}
 						// Catch up on anything the editor did not save.
 						this.scheduleWrite(note);
 					}
@@ -483,7 +574,7 @@ export class SyncEngine {
 		await this.vault.create(this.path(spare), text);
 		await this.addLocalNote(spare);
 		this.options.onProblem?.(
-			`"${rel}" differed from the server copy; your copy was kept as "${spare}".`,
+			`"${rel}" differed from the server copy; your copy was kept as "${spare}".` + COMPARE_HINT,
 		);
 	}
 
@@ -498,7 +589,16 @@ export class SyncEngine {
 			return;
 		}
 		const note = await this.note(id);
-		const text = await this.vault.read(path);
+		let text: string;
+		try {
+			text = await this.vault.read(path);
+		} catch (error) {
+			if (!this.vault.exists(path)) {
+				// Deleted right after it was saved: the delete is handled next.
+				return;
+			}
+			throw error;
+		}
 		if (text === note.text.toJSON()) {
 			if (note.base?.text !== text) {
 				this.setBase(note);
@@ -536,21 +636,43 @@ export class SyncEngine {
 			note.open.doc.transact(() => setText(note.text, text), ENGINE);
 			base = captureBase(note.open.doc, NOTE_FIELD);
 		} else {
-			base = mergeOutsideEdit(note.open.doc, NOTE_FIELD, note.base, text, ENGINE);
+			// Text the note already held merges against that state, not the
+			// base: what it has since is kept, and nothing is added twice.
+			const from = (onDisk ? note.earlier.find((b) => b.text === text) : undefined) ?? note.base;
+			base = mergeOutsideEdit(note.open.doc, NOTE_FIELD, from, text, ENGINE);
 		}
 		if (onDisk) {
 			this.keepBase(note, base);
 		}
 	}
 
+	/**
+	 * The base to merge an editor's text against: the one matching the file's
+	 * text the editor loaded. When none does, and the editor loaded what is on
+	 * disk now, the file changed after the current base and this device has
+	 * not merged that yet: the current base. Otherwise nothing says how the
+	 * two relate, and null keeps both.
+	 */
+	private baseFor(note: Note, loaded: string | null | undefined, disk: string | null): MergeBase | null {
+		if (loaded === null || loaded === undefined || note.base === null || note.base.text === loaded) {
+			return note.base;
+		}
+		const pinned = (this.loads.get(note.id) ?? []).map((load) => load.base);
+		const known = [...note.earlier, ...pinned].find((base) => base?.text === loaded);
+		if (known !== undefined && known !== null) {
+			return known;
+		}
+		return loaded === disk ? note.base : null;
+	}
+
 	/** The text the note would hold after merging `text` as an outside edit. */
-	private mergedText(note: Note, text: string): string {
-		if (note.base === null || note.text.toJSON() === note.base.text) {
+	private mergedText(note: Note, text: string, base = note.base): string {
+		if (base === null || note.text.toJSON() === base.text) {
 			return text;
 		}
 		const scratch = new Y.Doc();
 		Y.applyUpdate(scratch, Y.encodeStateAsUpdate(note.open.doc));
-		mergeOutsideEdit(scratch, NOTE_FIELD, note.base, text, ENGINE);
+		mergeOutsideEdit(scratch, NOTE_FIELD, base, text, ENGINE);
 		const merged = scratch.getText(NOTE_FIELD).toJSON();
 		scratch.destroy();
 		return merged;
@@ -664,8 +786,24 @@ export class SyncEngine {
 		this.save();
 	}
 
-	/** Moves a file the engine tracks; the vault event for it is then ignored. */
+	/**
+	 * Moves a file the engine tracks; the vault event for it is then ignored.
+	 * A move that changes only the case of letters, such as "note.md" to
+	 * "Note.md", goes by way of another name: file systems that ignore case,
+	 * as on macOS, iOS and Windows, take the new name for the file that is
+	 * already there and refuse the move, or do nothing.
+	 */
 	private async moveFile(from: string, to: string): Promise<void> {
+		if (from !== to && from.toLowerCase() === to.toLowerCase()) {
+			const aside = sparePath(from, 'renaming', (p) => this.taken(p) || this.takenIgnoringCase(p));
+			await this.moveOnce(from, aside);
+			await this.moveOnce(aside, to);
+			return;
+		}
+		await this.moveOnce(from, to);
+	}
+
+	private async moveOnce(from: string, to: string): Promise<void> {
 		const key = `${this.path(from)}\0${this.path(to)}`;
 		this.ownMoves.add(key);
 		try {
@@ -715,7 +853,7 @@ export class SyncEngine {
 				map.doc?.transact(() => map.set(spare, { id, kind: 'markdown' }), ENGINE);
 				indexed.set(id, spare);
 				this.options.onProblem?.(
-					`Another device also created "${rel}"; this device's copy is now "${spare}".`,
+					`Another device also created "${rel}"; this device's copy is now "${spare}".` + COMPARE_HINT,
 				);
 				continue;
 			}
@@ -743,6 +881,7 @@ export class SyncEngine {
 		await this.applyMoves(indexed);
 
 		const knownIds = new Set(Object.values(known));
+		let cases: CaseIndex | undefined;
 		for (const [rel, entry] of this.entries()) {
 			const id = entry.id;
 			if (known[rel] !== undefined || knownIds.has(id)) {
@@ -758,14 +897,99 @@ export class SyncEngine {
 				this.whenReady(note);
 				continue;
 			}
+			cases ??= this.caseIndex(null);
+			if (this.clashing(id, rel, null, cases)) {
+				continue;
+			}
 			if (!this.vault.exists(this.path(rel))) {
 				await this.createFile(rel, note);
 			} else {
 				await this.bindExisting(rel, note);
 			}
+			cases.add(rel);
 			knownIds.add(id);
 		}
+		// A clash for a note the space no longer lists, or that is where it is listed now, is over.
+		const listedAt = new Map(this.entries().map(([rel, entry]) => [entry.id, rel]));
+		for (const id of [...this.clashes.keys()]) {
+			const rel = listedAt.get(id);
+			if (rel === undefined || known[rel] === id) {
+				this.clashes.delete(id);
+			}
+		}
+		const current = new Set(this.clashes.values());
+		for (const message of [...this.reportedClashes]) {
+			if (!current.has(message)) {
+				this.reportedClashes.delete(message);
+			}
+		}
 		this.save();
+	}
+
+	/**
+	 * After a file here was renamed or deleted: a note skipped for a name
+	 * clash may fit now, so the folder is brought in line again.
+	 */
+	private async retryClashes(): Promise<void> {
+		if (this.clashes.size > 0) {
+			await this.reconcile();
+		}
+	}
+
+	/**
+	 * Whether note `id` cannot have its file at `rel` because another file
+	 * here, or one of its folders, has the same name in other letter case: a
+	 * file system that ignores case takes the two for one. The note stays
+	 * where it is, or is not created here, and is reported once; the other
+	 * notes go on. It is kept on the server and on other devices, and arrives
+	 * once one of the two is renamed. `moving` is the note's own path here,
+	 * which does not count.
+	 */
+	private clashing(id: string, rel: string, moving: string | null, index?: CaseIndex): boolean {
+		if (this.vault.ignoresCase === false) {
+			return false;
+		}
+		const clash = (index ?? this.caseIndex(moving)).clash(rel);
+		if (clash === null) {
+			this.clashes.delete(id);
+			return false;
+		}
+		// One report for each pair of names: a folder can hold many notes.
+		const message =
+			clash.folder === null
+				? `"${rel}" was not ${moving === null ? 'downloaded' : 'moved'} to this device: "${clash.other}" is ` +
+					'already here, and the two names differ only in letter case, which the files on this device ' +
+					'cannot tell apart. Rename one of them to have both here.'
+				: `Notes in the folder "${clash.folder}" were not ${moving === null ? 'downloaded' : 'moved'} to ` +
+					`this device: the folder "${clash.other}" is already here, and the two names differ only in ` +
+					'letter case, which the files on this device cannot tell apart. Rename one of them to have both here.';
+		this.clashes.set(id, message);
+		if (!this.reportedClashes.has(message)) {
+			this.reportedClashes.add(message);
+			this.options.onProblem?.(message);
+		}
+		return true;
+	}
+
+	/**
+	 * The files here, tracked or not, and their folders, by name in lower
+	 * case, to find names that differ only in letter case. `moving` is left out.
+	 */
+	private caseIndex(moving: string | null): CaseIndex {
+		const index = new CaseIndex();
+		for (const rel of Object.keys(this.state.known)) {
+			index.add(rel);
+		}
+		for (const path of this.vault.listMarkdown(this.folder)) {
+			const rel = this.relative(path);
+			if (rel !== null) {
+				index.add(rel);
+			}
+		}
+		if (moving !== null) {
+			index.remove(moving);
+		}
+		return index;
 	}
 
 	/**
@@ -843,6 +1067,9 @@ export class SyncEngine {
 						// Another note still sits there and moves away first.
 						continue;
 					}
+					if (this.clashing(id, target, rel)) {
+						continue;
+					}
 					if (this.vault.exists(this.path(target))) {
 						// An untracked file is in the way: keep it as a note of its own.
 						const spare = conflictPath(target, this.now(), (p) => this.taken(p));
@@ -913,7 +1140,7 @@ export class SyncEngine {
 			await this.addLocalNote(spare);
 			await this.createFile(rel, note);
 			this.options.onProblem?.(
-				`"${rel}" differed from the server copy; your copy was kept as "${spare}".`,
+				`"${rel}" differed from the server copy; your copy was kept as "${spare}".` + COMPARE_HINT,
 			);
 			return;
 		}
@@ -971,6 +1198,7 @@ export class SyncEngine {
 			open,
 			text,
 			base: null,
+			earlier: [],
 			dirty: false,
 			editors: 0,
 			writeTimer: null,
@@ -1037,7 +1265,15 @@ export class SyncEngine {
 	}
 
 	private keepBase(note: Note, base: MergeBase): void {
+		if (note.base !== null && note.base.text !== base.text) {
+			note.earlier = [note.base, ...note.earlier.filter((b) => b.text !== base.text)].slice(0, EARLIER_BASES);
+		}
 		note.base = base;
+		for (const load of this.loads.get(note.id) ?? []) {
+			if (load.base === null && load.text === base.text) {
+				load.base = base;
+			}
+		}
 		void note.open.store.set(BASE_KEY, base.update);
 	}
 
@@ -1135,6 +1371,13 @@ export class SyncEngine {
 		return null;
 	}
 
+	/** Whether a tracked or listed note has this path in other letter case. */
+	private takenIgnoringCase(rel: string): boolean {
+		const lower = rel.toLowerCase();
+		const paths = [...Object.keys(this.state.known), ...(this.map?.keys() ?? [])];
+		return paths.some((p) => p.toLowerCase() === lower);
+	}
+
 	private taken(rel: string): boolean {
 		return (
 			this.vault.exists(this.path(rel)) ||
@@ -1168,4 +1411,53 @@ function readEntry(value: unknown): IndexEntry | null {
 		return null;
 	}
 	return { id, kind };
+}
+
+/** Paths of files and folders by name in lower case, to find names that differ only in letter case. */
+class CaseIndex {
+	private readonly files = new Map<string, Set<string>>();
+	private readonly folders = new Map<string, Set<string>>();
+
+	add(rel: string): void {
+		put(this.files, rel);
+		for (const folder of folderPrefixes(rel)) {
+			put(this.folders, folder);
+		}
+	}
+
+	remove(rel: string): void {
+		this.files.get(rel.toLowerCase())?.delete(rel);
+	}
+
+	/**
+	 * A file or folder here that has the name of `rel`, or of one of its
+	 * folders, in other letter case; with `folder`, the folder of `rel` it
+	 * clashes with.
+	 */
+	clash(rel: string): { other: string; folder: string | null } | null {
+		for (const folder of folderPrefixes(rel)) {
+			const other = [...(this.folders.get(folder.toLowerCase()) ?? [])].find((f) => f !== folder);
+			if (other !== undefined) {
+				return { other, folder };
+			}
+		}
+		const other = [...(this.files.get(rel.toLowerCase()) ?? [])].find((f) => f !== rel);
+		return other === undefined ? null : { other, folder: null };
+	}
+}
+
+function put(map: Map<string, Set<string>>, path: string): void {
+	const key = path.toLowerCase();
+	let set = map.get(key);
+	if (set === undefined) {
+		set = new Set();
+		map.set(key, set);
+	}
+	set.add(path);
+}
+
+/** "a/b/c.md" → "a", "a/b". */
+function folderPrefixes(rel: string): string[] {
+	const parts = rel.split('/');
+	return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
 }

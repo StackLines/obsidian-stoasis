@@ -5,12 +5,18 @@
 // old file's text.
 import 'fake-indexeddb/auto';
 import { EditorState, Transaction, type TransactionSpec } from '@codemirror/state';
+import { env } from 'node:process';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SyncedEditor, isLoad, type EditorViewLike } from '../src/editor';
+import { SyncedEditor, isLoad, type EditorViewLike, type ShownFile } from '../src/editor';
 import { EditorSync } from '../src/sync/binding';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { SyncEngine, emptyEngineState, type EngineState } from '../src/sync/engine';
-import { replacesMost } from '../src/sync/text';
+import { replacesMost, setText } from '../src/sync/text';
+import { readPatch } from '../src/frontmatter-patch';
+import { applyToFrontmatter, reviewedFrontmatter, stillReviewed } from '../src/tagging';
+import { splitFrontmatter } from './stubs/obsidian';
+import { keepSyncedNote, useConflictCopy, type Compared, type ConflictFiles } from '../src/conflict';
+import * as Y from 'yjs';
 import { FakeVault, MemoryDocSource, MemoryHub } from './helpers/memory-source';
 import { memoryDisk, memoryStores } from './helpers/memory-store';
 import { SPACE_ID } from './helpers/control-plane';
@@ -26,13 +32,14 @@ afterEach(async () => {
 
 interface Device {
 	engine: SyncEngine;
+	source: MemoryDocSource;
 	vault: FakeVault;
 	state: EngineState;
 	editors: EditorSync;
 	problems: string[];
 }
 
-async function device(hub: MemoryHub): Promise<Device> {
+async function device(hub: MemoryHub, writeDelayMs = 1): Promise<Device> {
 	const source = new MemoryDocSource(hub, memoryStores(memoryDisk()), true);
 	const vault = new FakeVault();
 	const state = emptyEngineState();
@@ -45,7 +52,7 @@ async function device(hub: MemoryHub): Promise<Device> {
 		folder: 'Notes',
 		state,
 		saveState: () => {},
-		writeDelayMs: 1,
+		writeDelayMs,
 		onProblem: (problem) => problems.push(problem),
 		onTracked: () => editors.refresh(),
 		onRelink: (path) => editors.relink(path),
@@ -59,7 +66,7 @@ async function device(hub: MemoryHub): Promise<Device> {
 		await engine.stop();
 		await source.destroy();
 	});
-	return { engine, vault, state, editors, problems };
+	return { engine, source, vault, state, editors, problems };
 }
 
 async function settle(...devices: Device[]): Promise<void> {
@@ -71,6 +78,34 @@ async function settle(...devices: Device[]): Promise<void> {
 	}
 }
 
+/** The app's file objects: one per file, whose path changes when the file is renamed. */
+const fileObjects = new WeakMap<FakeVault, Map<string, ShownFile>>();
+
+function fileObject(vault: FakeVault, path: string | null): ShownFile | null {
+	if (path === null) {
+		return null;
+	}
+	let objects = fileObjects.get(vault);
+	if (objects === undefined) {
+		objects = new Map();
+		fileObjects.set(vault, objects);
+	}
+	let object = objects.get(path);
+	if (object === undefined) {
+		object = { path };
+		objects.set(path, object);
+	}
+	return object;
+}
+
+/** The app renames a file: its object, which open views hold, gets the new path. */
+function renameFileObject(vault: FakeVault, from: string, to: string): void {
+	const object = fileObject(vault, from) as { path: string };
+	fileObjects.get(vault)?.delete(from);
+	object.path = to;
+	fileObjects.get(vault)?.set(to, object);
+}
+
 /**
  * One editor pane as the app drives it: a CodeMirror state, the file the
  * pane shows (changed without a transaction, like the app's view), and saves
@@ -78,7 +113,7 @@ async function settle(...devices: Device[]): Promise<void> {
  */
 class Pane implements EditorViewLike {
 	state: EditorState;
-	file: string | null;
+	private shown: ShownFile | null;
 	/** What the app last loaded or saved; it saves only when the text differs. */
 	private data: string;
 	private editor: SyncedEditor;
@@ -88,10 +123,15 @@ class Pane implements EditorViewLike {
 		private readonly vault: FakeVault,
 		file: string | null,
 	) {
-		this.file = file;
+		this.shown = fileObject(vault, file);
 		this.data = file === null ? '' : (vault.files.get(file) ?? '');
 		this.state = EditorState.create({ doc: this.data });
-		this.editor = new SyncedEditor(sync, this, () => this.file);
+		this.editor = new SyncedEditor(sync, this, () => this.shown);
+	}
+
+	/** The path of the file the pane shows. */
+	get file(): string | null {
+		return this.shown?.path ?? null;
 	}
 
 	text(): string {
@@ -116,7 +156,7 @@ class Pane implements EditorViewLike {
 
 	/** The app points the pane at another file; nothing is dispatched. */
 	point(file: string | null): void {
-		this.file = file;
+		this.shown = fileObject(this.vault, file);
 	}
 
 	/** Any update without a text change: a selection, focus or layout change. */
@@ -143,14 +183,33 @@ class Pane implements EditorViewLike {
 	/** The app replaces the editor's state, which recreates the view plugins. */
 	replaceState(file: string | null, text: string): void {
 		this.editor.destroy();
-		this.file = file;
+		this.shown = fileObject(this.vault, file);
 		this.data = text;
 		this.state = EditorState.create({ doc: text });
-		this.editor = new SyncedEditor(this.sync, this, () => this.file);
+		this.editor = new SyncedEditor(this.sync, this, () => this.shown);
 	}
 
 	type(pos: number, insert: string): void {
 		this.dispatch({ changes: { from: pos, insert }, userEvent: 'input.type' });
+	}
+
+	/** Puts the cursor at `pos`, as a click does. */
+	select(pos: number): void {
+		this.dispatch({ selection: { anchor: pos }, userEvent: 'select.pointer' });
+	}
+
+	get cursor(): number {
+		return this.state.selection.main.head;
+	}
+
+	/** Typing at the cursor, which moves on past what was typed. */
+	typeHere(insert: string): void {
+		const at = this.cursor;
+		this.dispatch({
+			changes: { from: at, insert },
+			selection: { anchor: at + insert.length },
+			userEvent: 'input.type',
+		});
 	}
 
 	/** The app's save: the editor's text goes to the file the pane shows. */
@@ -342,6 +401,110 @@ describe('switching files in one editor', () => {
 		pane.close();
 	});
 
+	it('does not take a quick switch away and back for a rename, while the other file is still being read', async () => {
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		const read = a.vault.read.bind(a.vault);
+		let releaseB!: () => void;
+		const pendingB = new Promise<void>((resolve) => {
+			releaseB = resolve;
+		});
+		a.vault.read = async (path) => {
+			if (path === 'Notes/B.md') {
+				await pendingB;
+			}
+			return read(path);
+		};
+		// B loads, and the pane points at it before the update arrives; linking
+		// B waits for its file.
+		pane.loadThenPoint('Notes/B.md', ORIGINAL['Notes/B.md']!);
+		await delay(10);
+		expectIntact(hub, a, b);
+		// Back to A while the pane still shows B's text.
+		pane.point('Notes/A.md');
+		pane.nudge();
+		await delay(10);
+		expectIntact(hub, a, b);
+		releaseB();
+		await settle(a, b);
+		expectIntact(hub, a, b);
+		pane.save();
+		await settle(a, b);
+		expectIntact(hub, a, b);
+		pane.load(ORIGINAL['Notes/A.md']!);
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expectIntact(hub, a, b);
+		expect(pane.text()).toBe(ORIGINAL['Notes/A.md']);
+		expect(a.problems).toEqual([]);
+		pane.close();
+	});
+
+	it('forgets a rename once the pane shows another file, before the renamed note links again', async () => {
+		const { hub, a, b } = await pair();
+		a.vault.onRename = (from, to) => renameFileObject(a.vault, from, to);
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		a.vault.move('Notes/A.md', 'Notes/Renamed.md');
+		expect(pane.file).toBe('Notes/Renamed.md');
+		await settle(a, b);
+		const read = a.vault.read.bind(a.vault);
+		let release!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		a.vault.read = async (path) => {
+			if (path === 'Notes/Renamed.md' || path === 'Notes/B.md') {
+				await pending;
+			}
+			return read(path);
+		};
+		// The pane's next update sees the new name; linking it waits for the file.
+		pane.nudge();
+		await delay(10);
+		// To B and back while the renamed note is still linking.
+		pane.loadThenPoint('Notes/B.md', ORIGINAL['Notes/B.md']!);
+		await delay(10);
+		pane.point('Notes/Renamed.md');
+		pane.nudge();
+		await delay(10);
+		release();
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(Object.keys(index).sort()).toEqual(['B.md', 'C.md', 'Renamed.md']);
+		expect(hub.text(noteDocName(index['Renamed.md']!.id))).toBe(ORIGINAL['Notes/A.md']);
+		expect(hub.text(noteDocName(index['B.md']!.id))).toBe(ORIGINAL['Notes/B.md']);
+		for (const d of [a, b]) {
+			expect(d.vault.files.get('Notes/Renamed.md')).toBe(ORIGINAL['Notes/A.md']);
+			expect(d.vault.files.get('Notes/B.md')).toBe(ORIGINAL['Notes/B.md']);
+		}
+		expect(a.problems).toEqual([]);
+		pane.close();
+	});
+
+	it('does not take a rename for one when the same update loaded other text', async () => {
+		const { hub, a, b } = await pair();
+		a.vault.onRename = (from, to) => renameFileObject(a.vault, from, to);
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		a.vault.move('Notes/A.md', 'Notes/Renamed.md');
+		await settle(a, b);
+		// The pane's first update after the rename also loads other text.
+		pane.load(ORIGINAL['Notes/B.md']!);
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(hub.text(noteDocName(index['Renamed.md']!.id))).toBe(ORIGINAL['Notes/A.md']);
+		expect(b.vault.files.get('Notes/Renamed.md')).toBe(ORIGINAL['Notes/A.md']);
+		expect(pane.text()).toBe(ORIGINAL['Notes/A.md']);
+		pane.close();
+	});
+
 	it('refuses to let an editor replace most of a note without typing, and says so', async () => {
 		const { hub, a, b } = await pair();
 		const link = await a.engine.link('Notes/B.md');
@@ -397,5 +560,1148 @@ describe('replacesMost', () => {
 		expect(replacesMost('abcdefghij', 'abcdezzzzz')).toBe(false);
 		expect(replacesMost('one\ntwo\nthree\n', 'one\ntwo\nfour\n')).toBe(false);
 		expect(replacesMost('the first line\nthe second line\n', 'Something different.\n')).toBe(true);
+	});
+});
+
+/** The app's write delay: a note edited elsewhere reaches the disk this long after its shared text. */
+const WRITE_DELAY = 500;
+
+/** Two devices as `pair` makes them, `a` writing notes after the app's delay. */
+async function slowPair(): Promise<{ hub: MemoryHub; a: Device; b: Device }> {
+	const hub = new MemoryHub();
+	const a = await device(hub, WRITE_DELAY);
+	const b = await device(hub);
+	for (const [path, text] of Object.entries(ORIGINAL)) {
+		a.vault.write(path, text);
+	}
+	await settle(a, b);
+	await delay(WRITE_DELAY + 50);
+	await settle(a, b);
+	for (const path of Object.keys(ORIGINAL)) {
+		expect(b.vault.files.get(path)).toBe(ORIGINAL[path]);
+	}
+	return { hub, a, b };
+}
+
+function count(text: string, part: string): number {
+	return text.split(part).length - 1;
+}
+
+describe('switching away from a note before its editor links', () => {
+	it('never puts the note into the next one, while an edit from another device is still on its way to disk', async () => {
+		const { hub, a, b } = await slowPair();
+		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		const remote = (line: string) => (text: string) => text.replace('## Links', `${line}\n\n## Links`);
+		// B is closed here; the other device's edit is in its shared text
+		// on this device, not yet on this device's disk.
+		b.vault.write('Notes/B.md', remote('Remote line in B.')(ORIGINAL['Notes/B.md']!));
+		await settle(a, b);
+		expect(a.vault.files.get('Notes/B.md')).toBe(ORIGINAL['Notes/B.md']);
+		// Open B, then C straight away: the app saves as it leaves each file.
+		pane.save();
+		pane.point('Notes/B.md');
+		pane.load(a.vault.files.get('Notes/B.md')!);
+		pane.save();
+		pane.point('Notes/C.md');
+		const c = a.vault.files.get('Notes/C.md')!;
+		await delay(0);
+		pane.load(c);
+		await settle(a, b);
+		pane.nudge();
+		await settle(a, b);
+		// Another edit to B while C is shown.
+		b.vault.write('Notes/B.md', remote('Second remote line in B.')(b.vault.files.get('Notes/B.md')!));
+		await settle(a, b);
+		await delay(WRITE_DELAY + 50);
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+
+		const bText = remote('Second remote line in B.')(remote('Remote line in B.')(ORIGINAL['Notes/B.md']!));
+		expect(hub.text(noteDocName(index()['C.md']!.id))).toBe(ORIGINAL['Notes/C.md']);
+		expect(hub.text(noteDocName(index()['B.md']!.id))).toBe(bText);
+		for (const d of [a, b]) {
+			expect(d.vault.files.get('Notes/C.md')).toBe(ORIGINAL['Notes/C.md']);
+			expect(d.vault.files.get('Notes/B.md')).toBe(bText);
+			expect(d.vault.files.get('Notes/A.md')).toBe(ORIGINAL['Notes/A.md']);
+			expect(d.problems).toEqual([]);
+		}
+		expect(pane.file).toBe('Notes/C.md');
+		expect(pane.text()).toBe(ORIGINAL['Notes/C.md']);
+		pane.close();
+		await settle(a, b);
+		expect(a.editors.size).toBe(0);
+	});
+
+	it('adds text typed just before leaving a note once, when another device edits the note at that moment', async () => {
+		const { hub, a, b } = await slowPair();
+		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		pane.select(pane.text().indexOf('A quiet day.') + 'A quiet day.'.length);
+		pane.typeHere(' Typed here before leaving.');
+		await settle(a, b);
+		// The app saves A as it leaves; the other device's line reaches this
+		// device before it handles that save.
+		pane.save();
+		pane.point('Notes/B.md');
+		pane.load(a.vault.files.get('Notes/B.md')!);
+		serverEdit(hub, 'A.md', (t) => t.replace('## Links', 'Line from the other device.\n\n## Links'))();
+		await settle(a, b);
+		await delay(WRITE_DELAY + 50);
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+
+		const aText = ORIGINAL['Notes/A.md']!.replace('A quiet day.', 'A quiet day. Typed here before leaving.').replace(
+			'## Links',
+			'Line from the other device.\n\n## Links',
+		);
+		expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(aText);
+		expect(hub.text(noteDocName(index()['B.md']!.id))).toBe(ORIGINAL['Notes/B.md']);
+		for (const d of [a, b]) {
+			expect(count(d.vault.files.get('Notes/A.md')!, 'Typed here before leaving.')).toBe(1);
+			expect(d.vault.files.get('Notes/A.md')).toBe(aText);
+			expect(d.vault.files.get('Notes/B.md')).toBe(ORIGINAL['Notes/B.md']);
+			expect(d.problems).toEqual([]);
+		}
+		pane.close();
+	});
+});
+
+/** Numbers in [0, 1) from a seed, the same every run. */
+function random(seed: number): () => number {
+	let x = seed >>> 0;
+	return () => {
+		x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+		return x / 2 ** 32;
+	};
+}
+
+const FUZZ_NOTES = Object.keys(ORIGINAL);
+
+/** What one seed did, and what came of it. */
+interface FuzzRun {
+	failures: string[];
+	steps: string[];
+}
+
+/**
+ * Switches one pane among three daily notes from one template, in random
+ * orderings, typing, reloading and saving, while another device edits the
+ * same notes and this device writes them after the app's delay. Then checks
+ * that both devices and the server agree, that no note holds another's
+ * text, and that every line typed or edited elsewhere is there exactly once.
+ */
+async function fuzz(seed: number, stepCount = 14): Promise<FuzzRun> {
+	const next = random(seed);
+	const pick = <T>(items: readonly T[]): T => items[Math.floor(next() * items.length)]!;
+	const steps: string[] = [];
+	const hub = new MemoryHub();
+	const a = await device(hub, WRITE_DELAY);
+	const b = await device(hub);
+	for (const [path, text] of Object.entries(ORIGINAL)) {
+		a.vault.write(path, text);
+	}
+	await settle(a, b);
+	await delay(WRITE_DELAY + 20);
+	await settle(a, b);
+	a.vault.ioDelayMs = Math.floor(next() * 4);
+	const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+	await settle(a, b);
+	const marks = new Map<string, string>();
+	const own = (path: string) => ORIGINAL[path]!.split('\n')[0]!;
+	const pause = async () => {
+		const how = next();
+		if (how < 0.4) {
+			await settle(a, b);
+		} else {
+			await delay(Math.floor(next() * 3));
+		}
+	};
+	for (let i = 0; i < stepCount; i++) {
+		const roll = next();
+		const file = pane.file!;
+		if (roll < 0.3) {
+			const target = pick(FUZZ_NOTES.filter((path) => path !== file));
+			const [name, how] = pick(ORDERINGS);
+			steps.push(`switch to ${target}: ${name}`);
+			pane.save();
+			await how(pane, target, a.vault.files.get(target)!, pause);
+			if (next() < 0.5) {
+				pane.nudge();
+			}
+		} else if (roll < 0.55) {
+			const at = pane.text().indexOf('\n\n## Links');
+			if (pane.text().startsWith(`${own(file)}\n`) && at !== -1) {
+				const mark = `T${seed}-${i}.`;
+				marks.set(mark, file);
+				steps.push(`type ${mark} in ${file}`);
+				pane.type(at, ` ${mark}`);
+			}
+		} else if (roll < 0.75) {
+			const target = pick(FUZZ_NOTES);
+			const mark = `R${seed}-${i}.`;
+			marks.set(mark, target);
+			steps.push(`edit ${target} elsewhere: ${mark}`);
+			serverEdit(hub, target.slice('Notes/'.length), (t) => t.replace('\n\n## Links', ` ${mark}\n\n## Links`))();
+		} else if (roll < 0.85) {
+			steps.push(`reload ${file}`);
+			pane.save();
+			pane.load(a.vault.files.get(file)!);
+		} else {
+			steps.push('save');
+			pane.save();
+		}
+	}
+	pane.nudge();
+	pane.save();
+	await settle(a, b);
+	await delay(WRITE_DELAY + 20);
+	await settle(a, b);
+	pane.save();
+	await settle(a, b);
+	pane.close();
+	await settle(a, b);
+	await delay(WRITE_DELAY + 20);
+	await settle(a, b);
+
+	const failures: string[] = [];
+	const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+	if (Object.keys(index).sort().join() !== 'A.md,B.md,C.md') {
+		failures.push(`index: ${Object.keys(index).sort().join()}`);
+	}
+	for (const d of [a, b]) {
+		const extra = [...d.vault.files.keys()].filter((path) => !FUZZ_NOTES.includes(path));
+		if (extra.length > 0) {
+			failures.push(`other files: ${extra.join()}`);
+		}
+		if (d.problems.length > 0) {
+			failures.push(`problems: ${d.problems.join(' | ')}`);
+		}
+	}
+	for (const path of FUZZ_NOTES) {
+		const id = index[path.slice('Notes/'.length)]?.id;
+		const shared = id === undefined ? '' : hub.text(noteDocName(id));
+		for (const [i, d] of [a, b].entries()) {
+			if (d.vault.files.get(path) !== shared) {
+				failures.push(`${path} on device ${i} differs from the server`);
+			}
+		}
+		for (const other of FUZZ_NOTES) {
+			if (other !== path && shared.includes(own(other))) {
+				failures.push(`${path} holds the text of ${other}`);
+			}
+		}
+		for (const [mark, at] of marks) {
+			const n = count(shared, mark);
+			if (n !== (at === path ? 1 : 0)) {
+				failures.push(`${mark} is in ${path} ${n} times`);
+			}
+		}
+	}
+	return { failures, steps };
+}
+
+/**
+ * Seeds run on every test run. Before switching away from a linking editor
+ * let it go, the first six put one note's text into another; before a note's
+ * last editor remembered what it showed, the last six added typing twice.
+ * Some other seeds still fail when typing, a reload and an edit from the
+ * other device come within milliseconds of each other: the typing is added
+ * twice or kept in a conflict copy. `FUZZ_SEEDS=1-300` runs a range instead.
+ */
+function fuzzSeeds(): number[] {
+	const range = /^(\d+)-(\d+)$/.exec(env.FUZZ_SEEDS ?? '');
+	if (range === null) {
+		return [2, 3, 11, 16, 17, 31, 36, 59, 90, 102, 103, 122];
+	}
+	const from = Number(range[1]);
+	return Array.from({ length: Number(range[2]) - from + 1 }, (_, i) => from + i);
+}
+
+describe('switching files quickly, at random', () => {
+	it('keeps every note\'s own text and every edit once', async () => {
+		const seeds = fuzzSeeds();
+		const failed: string[] = [];
+		// A dozen at a time: each run spends most of its time waiting.
+		for (let i = 0; i < seeds.length; i += 12) {
+			const chunk = seeds.slice(i, i + 12);
+			const runs = await Promise.all(chunk.map((seed) => fuzz(seed)));
+			for (const [k, run] of runs.entries()) {
+				if (run.failures.length > 0) {
+					failed.push(`seed ${chunk[k]}: ${run.failures.join('; ')}\n  ${run.steps.join('\n  ')}`);
+				}
+			}
+		}
+		expect(failed).toEqual([]);
+	}, 600_000);
+});
+
+/**
+ * The server stamping base metadata into a note: it computes the new text
+ * from the shared text it holds, which may not have this device's latest
+ * typing yet, and the change then arrives through sync like any edit.
+ */
+function serverEdit(hub: MemoryHub, rel: string, edit: (text: string) => string, clientID?: number): () => void {
+	const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+	const shared = hub.doc(noteDocName(index[rel]!.id));
+	const server = new Y.Doc();
+	if (clientID !== undefined) {
+		server.clientID = clientID;
+	}
+	Y.applyUpdate(server, Y.encodeStateAsUpdate(shared));
+	const before = Y.encodeStateVector(server);
+	const text = server.getText('content');
+	setText(text, edit(text.toJSON()));
+	const update = Y.encodeStateAsUpdate(server, before);
+	server.destroy();
+	return () => Y.applyUpdate(shared, update);
+}
+
+const BASE_KEYS = 'brain-id: 5f0c2a9e-3b1d-4c7e-8a6f-0d2b4e6c8a1f\nbrain-created: 2026-10-16\nbrain-schema: stoasis/2\n';
+const stamp = (text: string) =>
+	text.startsWith('---\n') ? text.replace(/\n---\n/, `\n${BASE_KEYS}---\n`) : `---\n${BASE_KEYS}---\n${text}`;
+
+describe('a base metadata stamp arriving while the note is open', () => {
+	async function opened(text?: string) {
+		const { hub, a, b } = await pair();
+		if (text !== undefined) {
+			a.vault.write('Notes/A.md', text);
+			await settle(a, b);
+		}
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		expect(a.editors.size).toBe(1);
+		return { hub, a, b, pane };
+	}
+
+	async function expectEverywhere(pane: Pane, hub: MemoryHub, a: Device, b: Device, expected: string) {
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expect(pane.text()).toBe(expected);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+		expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(a.problems).toEqual([]);
+	}
+
+	it('keeps the cursor and the typing in the body when the note had no frontmatter', async () => {
+		const { hub, a, b, pane } = await opened();
+		const original = ORIGINAL['Notes/A.md'] as string;
+		const at = original.indexOf('A quiet day.') + 'A quiet'.length;
+		pane.select(at);
+		pane.typeHere(', calm');
+		// Computed before this device's typing reached the server.
+		const arrive = serverEdit(hub, 'A.md', stamp);
+		pane.typeHere(' and');
+		arrive();
+		const added = `---\n${BASE_KEYS}---\n`.length;
+		expect(pane.cursor).toBe(at + ', calm and'.length + added);
+		pane.typeHere(' sunny');
+		const typed = original.replace('A quiet day.', 'A quiet, calm and sunny day.');
+		await expectEverywhere(pane, hub, a, b, stamp(typed));
+		pane.close();
+	});
+
+	it('adds keys inside existing frontmatter without moving the cursor', async () => {
+		const withFrontmatter = `---\ntitle: Day 1\ntags:\n  - daily\n---\n${ORIGINAL['Notes/A.md']}`;
+		const { hub, a, b, pane } = await opened(withFrontmatter);
+		const at = withFrontmatter.indexOf('Review the inbox') + 'Review'.length;
+		pane.select(at);
+		const arrive = serverEdit(hub, 'A.md', stamp);
+		pane.typeHere(' all of');
+		arrive();
+		expect(pane.cursor).toBe(at + ' all of'.length + BASE_KEYS.length);
+		pane.typeHere(' it,');
+		const typed = withFrontmatter.replace('Review the inbox', 'Review all of it, the inbox');
+		await expectEverywhere(pane, hub, a, b, stamp(typed));
+		pane.close();
+	});
+
+	it('leaves a cursor at the very start of the note after the new frontmatter', async () => {
+		const { hub, a, b, pane } = await opened();
+		pane.select(0);
+		serverEdit(hub, 'A.md', stamp)();
+		pane.typeHere('Top. ');
+		await expectEverywhere(pane, hub, a, b, stamp(`Top. ${ORIGINAL['Notes/A.md']}`));
+		pane.close();
+	});
+
+	/** The client id of a device's copy of note A, which orders its inserts against the server's. */
+	function clientOf(d: Device, hub: MemoryHub): number {
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		return d.source.open(noteDocName(index['A.md']!.id)).doc.clientID;
+	}
+
+	const BLOCK = `---\n${BASE_KEYS}---\n`;
+
+	// A known limit: Yjs orders two inserts at the same place made at the same
+	// time by client id, so text typed at the start as the server adds the
+	// first frontmatter can go before it. The plugin leaves it there rather
+	// than move anyone's text; every character is kept, the same on every
+	// device, and the cursor stays in what was typed.
+	for (const order of ['before', 'after'] as const) {
+		it(`keeps text typed at the start as the stamp arrives, with the server's client id ${order}`, async () => {
+			const { hub, a, b, pane } = await opened();
+			const mine = clientOf(a, hub);
+			const server = order === 'before' ? mine - 1 : mine + 1;
+			pane.select(0);
+			// Computed before this device's typing reached the server.
+			const arrive = serverEdit(hub, 'A.md', stamp, server);
+			pane.typeHere('Typed. ');
+			arrive();
+			const original = ORIGINAL['Notes/A.md'] as string;
+			const typedFirst = order === 'after';
+			expect(pane.text()).toBe(typedFirst ? `Typed. ${BLOCK}${original}` : `${BLOCK}Typed. ${original}`);
+			expect(pane.cursor).toBe(typedFirst ? 'Typed. '.length : `${BLOCK}Typed. `.length);
+			pane.typeHere('More. ');
+			await expectEverywhere(
+				pane,
+				hub,
+				a,
+				b,
+				typedFirst ? `Typed. More. ${BLOCK}${original}` : `${BLOCK}Typed. More. ${original}`,
+			);
+			pane.close();
+		});
+	}
+
+	it('keeps text typed at the start offline where Yjs puts it when the stamp arrives', async () => {
+		const { hub, a, b, pane } = await opened();
+		const server = clientOf(a, hub) + 1;
+		a.source.setOnline(false);
+		pane.select(0);
+		pane.typeHere('Offline. ');
+		serverEdit(hub, 'A.md', stamp, server)();
+		await settle(a, b);
+		expect(b.vault.files.get('Notes/A.md')).toBe(stamp(ORIGINAL['Notes/A.md'] as string));
+		a.source.setOnline(true);
+		await settle(a, b);
+		expect(pane.cursor).toBe('Offline. '.length);
+		await expectEverywhere(pane, hub, a, b, `Offline. ${BLOCK}${ORIGINAL['Notes/A.md']}`);
+		pane.close();
+	});
+
+	it('keeps words another device added inside text typed at the start with them', async () => {
+		const { hub, a, b, pane } = await opened();
+		const other = new Pane(b.editors, b.vault, 'Notes/A.md');
+		await settle(a, b);
+		const arrive = serverEdit(hub, 'A.md', stamp, Math.max(clientOf(a, hub), clientOf(b, hub)) + 1);
+		pane.select(0);
+		pane.typeHere('Hello world. ');
+		await settle(a, b);
+		other.type('Hello'.length, ' brave');
+		await settle(a, b);
+		arrive();
+		await settle(a, b);
+		other.save();
+		const original = ORIGINAL['Notes/A.md'] as string;
+		await expectEverywhere(pane, hub, a, b, `Hello brave world. ${BLOCK}${original}`);
+		expect(other.text()).toBe(pane.text());
+		pane.close();
+		other.close();
+	});
+
+	it('keeps a deletion another device made in text typed at the start', async () => {
+		const { hub, a, b, pane } = await opened();
+		const other = new Pane(b.editors, b.vault, 'Notes/A.md');
+		await settle(a, b);
+		const arrive = serverEdit(hub, 'A.md', stamp, Math.max(clientOf(a, hub), clientOf(b, hub)) + 1);
+		pane.select(0);
+		pane.typeHere('Hello world. ');
+		await settle(a, b);
+		other.dispatch({ changes: { from: 'Hello '.length, to: 'Hello world'.length }, userEvent: 'delete' });
+		arrive();
+		await settle(a, b);
+		other.save();
+		await expectEverywhere(pane, hub, a, b, `Hello . ${BLOCK}${ORIGINAL['Notes/A.md']}`);
+		expect(other.text()).toBe(pane.text());
+		pane.close();
+		other.close();
+	});
+
+	it('leaves text typed at the start before a section between rules that arrives at the same time', async () => {
+		const { hub, a, b, pane } = await opened();
+		const section = '---\nA paragraph between rules, not metadata.\n---\n';
+		pane.select(0);
+		const arrive = serverEdit(hub, 'A.md', (text) => section + text, clientOf(a, hub) + 1);
+		pane.typeHere('Typed. ');
+		arrive();
+		await expectEverywhere(pane, hub, a, b, `Typed. ${section}${ORIGINAL['Notes/A.md']}`);
+		pane.close();
+	});
+
+	it('keeps a selection over body text selected', async () => {
+		const { hub, a, b, pane } = await opened();
+		const from = (ORIGINAL['Notes/A.md'] as string).indexOf('quiet');
+		pane.dispatch({ selection: { anchor: from, head: from + 'quiet'.length } });
+		serverEdit(hub, 'A.md', stamp)();
+		const range = pane.state.selection.main;
+		expect(pane.text().slice(range.from, range.to)).toBe('quiet');
+		await expectEverywhere(pane, hub, a, b, stamp(ORIGINAL['Notes/A.md'] as string));
+		pane.close();
+	});
+});
+
+/**
+ * Tag now on this device: the app's processFrontMatter rewrites the file on
+ * disk, then shows the new text in the open editor, either by replacing it
+ * whole or by changing only what differs.
+ */
+const TAG_PATCH = readPatch({ tags_add: ['daily'], set: { 'brain-type': 'journal' }, actor: 'agent' })!;
+const TAGGED = 'tags:\n  - daily\nbrain-type: journal\nbrain-tagged: 2026-10-16 by agent\n';
+
+/**
+ * Tags the note on disk, as the plugin does inside processFrontMatter. With
+ * `reviewed`, the frontmatter the proposal was made for, nothing is written
+ * unless the note, and the open `pane`, still have it: then the result is null.
+ */
+async function tagOnDisk(device: Device, path: string, reviewed?: string, pane?: Pane): Promise<string | null> {
+	// The plugin checks the open editor's properties first: they may not be saved yet.
+	if (reviewed !== undefined && pane !== undefined && !stillReviewed(splitFrontmatter(pane.text()).frontmatter, reviewed)) {
+		return null;
+	}
+	let written: string | null = null;
+	await device.vault.process(path, (text) => {
+		const { frontmatter, body } = splitFrontmatter(text);
+		if (reviewed !== undefined && !stillReviewed(frontmatter, reviewed)) {
+			return text;
+		}
+		applyToFrontmatter(frontmatter, TAG_PATCH, '2026-10-16');
+		const yaml = Object.entries(frontmatter)
+			.map(([key, value]) =>
+				Array.isArray(value) ? `${key}:\n${value.map((v) => `  - ${String(v)}`).join('\n')}\n` : `${key}: ${String(value)}\n`,
+			)
+			.join('');
+		written = `---\n${yaml}---\n${body}`;
+		return written;
+	});
+	return written;
+}
+
+type Reload = (pane: Pane, text: string) => void;
+const RELOADS: Array<[string, Reload]> = [
+	[
+		'the app replaces the editor text',
+		(pane, text) => {
+			pane.load(text);
+			// That moves the cursor to the start; the user clicks back.
+			pane.select(text.indexOf('calm day') + 'calm'.length);
+		},
+	],
+	[
+		'the app changes only what differs',
+		(pane, text) => {
+			const current = pane.text();
+			let start = 0;
+			while (start < current.length && start < text.length && current[start] === text[start]) {
+				start++;
+			}
+			let end = 0;
+			while (
+				end < current.length - start &&
+				end < text.length - start &&
+				current[current.length - 1 - end] === text[text.length - 1 - end]
+			) {
+				end++;
+			}
+			pane.dispatch({ changes: { from: start, to: current.length - end, insert: text.slice(start, text.length - end) } });
+		},
+	],
+];
+
+/**
+ * The app reloads an open note's file, and the editor links again only at
+ * its next update. Edits from the other device can reach the file and the
+ * note in between, any number of them.
+ */
+describe('an editor reloaded while edits from the other device arrive', () => {
+	const remoteLines = (n: number) => Array.from({ length: n }, (_, i) => `- Remote line ${i}`).join('\n');
+	const withRemote = (n: number) => (ORIGINAL['Notes/A.md'] as string).replace('- Next day', `- Next day\n${remoteLines(n)}`);
+
+	async function reloadedThenEdited(count: number) {
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		pane.load(pane.text());
+		for (let i = 1; i <= count; i++) {
+			b.vault.write('Notes/A.md', withRemote(i));
+			await settle(a, b);
+			expect(a.vault.files.get('Notes/A.md')).toBe(withRemote(i));
+		}
+		return { hub, a, b, pane };
+	}
+
+	function expectEverywhere(hub: MemoryHub, a: Device, b: Device, pane: Pane, expected: string) {
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(pane.text()).toBe(expected);
+		expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+		expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+	}
+
+	for (const count of [1, 5, 12]) {
+		it(`keeps ${count} remote edits that arrived before the next update`, async () => {
+			const { hub, a, b, pane } = await reloadedThenEdited(count);
+			pane.select(pane.text().indexOf('A quiet') + 'A quiet'.length);
+			pane.typeHere(', calm');
+			await settle(a, b);
+			pane.save();
+			await settle(a, b);
+			expectEverywhere(hub, a, b, pane, withRemote(count).replace('A quiet day.', 'A quiet, calm day.'));
+			expect(a.problems).toEqual([]);
+			pane.close();
+		});
+	}
+
+	it('keeps them when linking again waits for the file', async () => {
+		const { hub, a, b, pane } = await reloadedThenEdited(6);
+		const read = a.vault.read.bind(a.vault);
+		let release!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		a.vault.read = async (path) => {
+			await pending;
+			return read(path);
+		};
+		pane.nudge();
+		await delay(10);
+		// One more arrives while the editor links.
+		b.vault.write('Notes/A.md', withRemote(7));
+		await delay(10);
+		release();
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expectEverywhere(hub, a, b, pane, withRemote(7));
+		expect(a.problems).toEqual([]);
+		pane.close();
+	});
+
+	it('keeps both when nothing on this device says what the editor loaded', async () => {
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		// Text that was never the file's, as far as this device knows.
+		const unknown = `${ORIGINAL['Notes/A.md']}A line from nowhere.\n`;
+		pane.load(unknown);
+		for (let i = 1; i <= 2; i++) {
+			b.vault.write('Notes/A.md', withRemote(i));
+			await settle(a, b);
+		}
+		pane.nudge();
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expectEverywhere(hub, a, b, pane, withRemote(2));
+		const copies = [...a.vault.files.keys()].filter((p) => p.includes('(conflict'));
+		expect(copies).toHaveLength(1);
+		expect(a.vault.files.get(copies[0]!)).toBe(unknown);
+		expect(a.problems).toHaveLength(1);
+		pane.close();
+	});
+});
+
+describe('tagging a note while it is open', () => {
+	for (const [name, reload] of RELOADS) {
+		it(`writes the properties once and keeps the typing: ${name}`, async () => {
+			const { hub, a, b } = await pair();
+			const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+			await settle(a, b);
+			const at = (ORIGINAL['Notes/A.md'] as string).indexOf('A quiet day.') + 'A quiet'.length;
+			pane.select(at);
+			pane.typeHere(', calm');
+			pane.save();
+			await settle(a, b);
+
+			const written = (await tagOnDisk(a, 'Notes/A.md')) as string;
+			reload(pane, written);
+			pane.typeHere(' and sunny');
+			await settle(a, b);
+			pane.save();
+			await settle(a, b);
+
+			const expected = `---\n${TAGGED}---\n${(ORIGINAL['Notes/A.md'] as string).replace('A quiet day.', 'A quiet, calm and sunny day.')}`;
+			expect(pane.text()).toBe(expected);
+			const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+			expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+			expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+			expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+			expect(a.problems).toEqual([]);
+			expect(b.problems).toEqual([]);
+			pane.close();
+		});
+	}
+
+	const NEXT_UPDATES: Array<[string, (pane: Pane) => void, string]> = [
+		['a click', (pane) => pane.select(pane.text().indexOf('A quiet')), 'A quiet day.'],
+		[
+			'typing',
+			(pane) => {
+				pane.select(pane.text().indexOf('A quiet') + 'A quiet'.length);
+				pane.typeHere(', calm');
+			},
+			'A quiet, calm day.',
+		],
+	];
+	for (const [name, next, body] of NEXT_UPDATES) {
+		it(`keeps an edit from another device that arrives before the editor's next update: ${name}`, async () => {
+			const { hub, a, b } = await pair();
+			const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+			await settle(a, b);
+			const fromB = (ORIGINAL['Notes/A.md'] as string).replace('- Next day', '- Next day\n- Notes from B');
+			b.vault.write('Notes/A.md', fromB);
+			const written = (await tagOnDisk(a, 'Notes/A.md')) as string;
+			pane.load(written);
+			// B's line reaches this device, and its disk, before the editor updates again.
+			await settle(a, b);
+			expect(a.vault.files.get('Notes/A.md')).toContain('- Notes from B');
+			next(pane);
+			await settle(a, b);
+			pane.save();
+			await settle(a, b);
+
+			const expected = `---\n${TAGGED}---\n${fromB.replace('A quiet day.', body)}`;
+			expect(pane.text()).toBe(expected);
+			const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+			expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+			expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+			expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+			expect(a.problems).toEqual([]);
+			expect(b.problems).toEqual([]);
+			pane.close();
+		});
+	}
+
+	it('writes nothing for a proposal made before the other device changed the properties', async () => {
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		// The proposal is made for the note as it is: no frontmatter.
+		const reviewed = reviewedFrontmatter(splitFrontmatter(pane.text()).frontmatter);
+		const fromB = `---\nbrain-people:\n  - [[Bob Example]]\n---\n${ORIGINAL['Notes/A.md'] as string}`;
+		b.vault.write('Notes/A.md', fromB);
+		await settle(a, b);
+		expect(pane.text()).toBe(fromB);
+		pane.select(pane.text().indexOf('A quiet') + 'A quiet'.length);
+		pane.typeHere(', calm');
+
+		// The editor has the new properties; the file may not have them yet.
+		expect(await tagOnDisk(a, 'Notes/A.md', reviewed, pane)).toBeNull();
+		pane.save();
+		await settle(a, b);
+		// Once saved, the file has them too.
+		expect(await tagOnDisk(a, 'Notes/A.md', reviewed)).toBeNull();
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+
+		const expected = fromB.replace('A quiet day.', 'A quiet, calm day.');
+		expect(pane.text()).toBe(expected);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+		expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		pane.close();
+	});
+});
+
+/**
+ * A copy kept in a conflict is a note of its own, synced like any other.
+ * Keeping one side writes the note on disk while it may be open, and trashes
+ * the copy, on this device; sync carries both to the other device.
+ */
+describe('keeping one side of a conflict copy while the note is open', () => {
+	const COPY = 'Notes/A (conflict 2026-10-16).md';
+	const COPY_TEXT = day(1, 'Write the summary', 'A quiet day, written on this device while it was offline.');
+
+	async function withCopy() {
+		const { hub, a, b } = await pair();
+		a.vault.write(COPY, COPY_TEXT);
+		await settle(a, b);
+		expect(b.vault.files.get(COPY)).toBe(COPY_TEXT);
+		const paneA = new Pane(a.editors, a.vault, 'Notes/A.md');
+		const paneB = new Pane(b.editors, b.vault, 'Notes/A.md');
+		await settle(a, b);
+		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		return { hub, a, b, paneA, paneB, index };
+	}
+
+	/**
+	 * The two files as the plugin compares them on device `d`: each as an
+	 * open pane shows it, else as on disk, and the synced note at each path.
+	 */
+	async function compare(d: Device, ...panes: Pane[]): Promise<{ files: ConflictFiles; compared: Compared }> {
+		const paths = { copy: COPY, original: 'Notes/A.md' };
+		const ids = { copy: d.engine.noteAt(COPY), original: d.engine.noteAt('Notes/A.md') };
+		const files: ConflictFiles = {
+			same: (side) => d.vault.exists(paths[side]) && d.engine.noteAt(paths[side]) === ids[side],
+			shown: (side) => panes.find((pane) => pane.file === paths[side])?.text() ?? null,
+			read: (side) => d.vault.read(paths[side]),
+			process: (side, update) => d.vault.process(paths[side], update),
+			trash: (side) => d.vault.trash(paths[side]),
+		};
+		const compared: Compared = {
+			copyText: files.shown('copy') ?? (await files.read('copy')),
+			originalText: files.shown('original') ?? (await files.read('original')),
+		};
+		return { files, compared };
+	}
+
+	const SHOWS: Array<[string, Reload]> = [
+		['the app replaces the editor text', (pane, text) => pane.load(text)],
+		RELOADS[1]!,
+	];
+	for (const [name, reload] of SHOWS) {
+		it(`keep this device: the note gets the copy's text everywhere, and the copy goes: ${name}`, async () => {
+			const { hub, a, b, paneA, paneB, index } = await withCopy();
+			const { files, compared } = await compare(a, paneA);
+			expect(await useConflictCopy(files, compared)).toBe('kept');
+			// The app shows the note's new text in its open editor.
+			reload(paneA, COPY_TEXT);
+			await settle(a, b);
+			paneB.save();
+			await settle(a, b);
+
+			expect(a.vault.trashed).toEqual([COPY]);
+			expect(a.vault.files.has(COPY)).toBe(false);
+			expect(b.vault.files.has(COPY)).toBe(false);
+			expect(Object.keys(index()).sort()).toEqual(['A.md', 'B.md', 'C.md']);
+			expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(COPY_TEXT);
+			expect(a.vault.files.get('Notes/A.md')).toBe(COPY_TEXT);
+			expect(b.vault.files.get('Notes/A.md')).toBe(COPY_TEXT);
+			expect(paneA.text()).toBe(COPY_TEXT);
+			expect(paneB.text()).toBe(COPY_TEXT);
+			expect(a.problems).toEqual([]);
+			expect(b.problems).toEqual([]);
+			paneA.close();
+			paneB.close();
+		});
+	}
+
+	it('keep the server: the note stays as it is, and the copy goes', async () => {
+		const { hub, a, b, paneA, paneB } = await withCopy();
+		const { files, compared } = await compare(a, paneA);
+		expect(await keepSyncedNote(files, compared)).toBe('kept');
+		await settle(a, b);
+		expect(a.vault.files.has(COPY)).toBe(false);
+		expect(b.vault.files.has(COPY)).toBe(false);
+		expectIntact(hub, a, b);
+		expect(paneA.text()).toBe(ORIGINAL['Notes/A.md']);
+		expect(paneB.text()).toBe(ORIGINAL['Notes/A.md']);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		paneA.close();
+		paneB.close();
+	});
+
+	it('use conflict copy, with the copy open and typed in but not saved: the note gets the typing', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withCopy();
+		const copyPane = new Pane(a.editors, a.vault, COPY);
+		await settle(a, b);
+		const at = copyPane.text().indexOf('A quiet day');
+		copyPane.type(at, 'Unsaved: ');
+		const typed = copyPane.text();
+		expect(a.vault.files.get(COPY)).toBe(COPY_TEXT);
+		const { files, compared } = await compare(a, paneA, copyPane);
+		expect(compared.copyText).toBe(typed);
+		expect(await useConflictCopy(files, compared)).toBe('kept');
+		paneA.load(typed);
+		copyPane.close();
+		await settle(a, b);
+		paneB.save();
+		await settle(a, b);
+
+		expect(a.vault.files.get('Notes/A.md')).toBe(typed);
+		expect(b.vault.files.get('Notes/A.md')).toBe(typed);
+		expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(typed);
+		expect(paneB.text()).toBe(typed);
+		expect(a.vault.files.has(COPY)).toBe(false);
+		expect(b.vault.files.has(COPY)).toBe(false);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		paneA.close();
+		paneB.close();
+	});
+
+	for (const choice of ['use conflict copy', 'keep current synced note'] as const) {
+		it(`${choice}, typed in the open copy as it is about to go: the copy and the typing stay`, async () => {
+			const { hub, a, b, paneA, paneB, index } = await withCopy();
+			const copyPane = new Pane(a.editors, a.vault, COPY);
+			await settle(a, b);
+			const { files, compared } = await compare(a, paneA, copyPane);
+			// The last read of the copy before the trash: the person types meanwhile.
+			const read = files.read.bind(files);
+			files.read = async (side) => {
+				const text = await read(side);
+				if (side === 'copy' && (choice === 'keep current synced note' || a.vault.files.get('Notes/A.md') === COPY_TEXT)) {
+					files.read = read;
+					copyPane.type(copyPane.text().indexOf('A quiet day'), 'Late: ');
+				}
+				return text;
+			};
+			const kept = choice === 'use conflict copy' ? await useConflictCopy(files, compared) : await keepSyncedNote(files, compared);
+			const typed = copyPane.text();
+			expect(typed).toContain('Late: A quiet day');
+			if (choice === 'use conflict copy') {
+				expect(kept).toBe('copy-changed');
+				paneA.load(COPY_TEXT);
+			} else {
+				expect(kept).toBe('changed');
+			}
+			copyPane.save();
+			await settle(a, b);
+			paneB.save();
+			await settle(a, b);
+
+			const note = choice === 'use conflict copy' ? COPY_TEXT : ORIGINAL['Notes/A.md'];
+			expect(a.vault.trashed).toEqual([]);
+			for (const d of [a, b]) {
+				expect(d.vault.files.get(COPY)).toBe(typed);
+				expect(d.vault.files.get('Notes/A.md')).toBe(note);
+				expect(d.problems).toEqual([]);
+			}
+			expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(note);
+			expect(paneB.text()).toBe(note);
+			copyPane.close();
+			paneA.close();
+			paneB.close();
+		});
+	}
+
+	it('use conflict copy, while the other device edits the copy: the edit is kept in the copy', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withCopy();
+		const { files, compared } = await compare(a, paneA);
+		// The other device's edit to the copy arrives while the note gets the copy's text.
+		const edited = COPY_TEXT.replace('A quiet day', 'A quiet day, edited on the other device');
+		const process = a.vault.process.bind(a.vault);
+		a.vault.process = async (path, update) => {
+			a.vault.process = process;
+			await process(path, update);
+			b.vault.write(COPY, edited);
+			await settle(a, b);
+		};
+		expect(await useConflictCopy(files, compared)).toBe('copy-changed');
+		paneA.load(COPY_TEXT);
+		await settle(a, b);
+		paneB.save();
+		await settle(a, b);
+
+		expect(a.vault.files.get('Notes/A.md')).toBe(COPY_TEXT);
+		expect(b.vault.files.get('Notes/A.md')).toBe(COPY_TEXT);
+		expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(COPY_TEXT);
+		expect(a.vault.files.get(COPY)).toBe(edited);
+		expect(b.vault.files.get(COPY)).toBe(edited);
+		expect(a.vault.trashed).toEqual([]);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		paneA.close();
+		paneB.close();
+	});
+});
+
+describe('a case-only rename while the note is open', () => {
+	/** Both devices ignore case, as on macOS and iOS; each has the note open. */
+	async function withPanes() {
+		const { hub, a, b } = await pair();
+		a.vault.ignoresCase = true;
+		b.vault.ignoresCase = true;
+		const paneA = new Pane(a.editors, a.vault, 'Notes/A.md');
+		const paneB = new Pane(b.editors, b.vault, 'Notes/A.md');
+		// The app's views follow a renamed file without a transaction: they
+		// hold the same file object, whose path changes.
+		for (const vault of [a.vault, b.vault]) {
+			vault.onRename = (from, to) => renameFileObject(vault, from, to);
+		}
+		await settle(a, b);
+		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		return { hub, a, b, paneA, paneB, index };
+	}
+
+	const NOTE = 'Notes/A.md';
+	const CASE_ONLY = 'Notes/a.md';
+	const TYPED = ORIGINAL[NOTE]!.replace('A quiet day.', 'A quiet day. Typed before. Typed after.');
+
+	for (const [name, renamer, RENAMED] of [
+		['on the other device', 'a', CASE_ONLY],
+		['on this device', 'b', CASE_ONLY],
+		// Any rename: what was typed before it is not merged in twice.
+		['to another name on the other device', 'a', 'Notes/Renamed.md'],
+		['to another name on this device', 'b', 'Notes/Renamed.md'],
+	] as const) {
+		it(`follows a rename ${name} and keeps the typing around it`, async () => {
+			const RENAMED_REL = RENAMED.slice('Notes/'.length);
+			const { hub, a, b, paneA, paneB, index } = await withPanes();
+			const id = index()['A.md']!.id;
+			const at = paneB.text().indexOf('A quiet day.') + 'A quiet day.'.length;
+			paneB.select(at);
+			paneB.typeHere(' Typed before.');
+			(renamer === 'a' ? a : b).vault.move(NOTE, RENAMED);
+			await settle(a, b);
+			// Any update, such as a scroll, that leaves the cursor where it is.
+			paneB.dispatch({});
+			paneB.typeHere(' Typed after.');
+			await settle(a, b);
+			paneA.save();
+			paneB.save();
+			await settle(a, b);
+
+			expect(Object.keys(index()).sort()).toEqual(['B.md', 'C.md', RENAMED_REL].sort());
+			expect(index()[RENAMED_REL]!.id).toBe(id);
+			expect(hub.text(noteDocName(id))).toBe(TYPED);
+			for (const d of [a, b]) {
+				expect([...d.vault.files.keys()].filter((p) => p.startsWith('Notes/')).sort()).toEqual(
+					['Notes/B.md', 'Notes/C.md', RENAMED].sort(),
+				);
+				expect(d.vault.files.get(RENAMED)).toBe(TYPED);
+				expect(d.state.known[RENAMED_REL]).toBe(id);
+				expect(d.problems).toEqual([]);
+			}
+			expect(paneA.file).toBe(RENAMED);
+			expect(paneB.file).toBe(RENAMED);
+			expect(paneA.text()).toBe(TYPED);
+			expect(paneB.text()).toBe(TYPED);
+			expect(paneB.cursor).toBe(TYPED.indexOf(' Typed after.') + ' Typed after.'.length);
+			paneA.close();
+			paneB.close();
+		});
+	}
+
+	it('renames back, and on a device that minds case', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withPanes();
+		b.vault.ignoresCase = false;
+		const id = index()['A.md']!.id;
+		a.vault.move(NOTE, CASE_ONLY);
+		await settle(a, b);
+		b.vault.move(CASE_ONLY, NOTE);
+		await settle(a, b);
+		expect(Object.keys(index()).sort()).toEqual(['A.md', 'B.md', 'C.md']);
+		expect(index()['A.md']!.id).toBe(id);
+		expectIntact(hub, a, b);
+		expect([a.vault.files.has(CASE_ONLY), b.vault.files.has(CASE_ONLY)]).toEqual([false, false]);
+		expect([paneA.file, paneB.file]).toEqual([NOTE, NOTE]);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		paneA.close();
+		paneB.close();
+	});
+
+	for (const saving of [false, true]) {
+		it(`keeps what is typed while a case-only rename goes by way of a temporary name${saving ? ', saved meanwhile' : ''}`, async () => {
+			const { hub, a, b, paneA, paneB, index } = await withPanes();
+			const id = index()['A.md']!.id;
+			const at = paneB.text().indexOf('A quiet day.') + 'A quiet day.'.length;
+			paneB.select(at);
+			paneB.typeHere(' Before.');
+			// At each step the app's view follows the file and updates; the
+			// engine's rename takes a while, and the person types meanwhile.
+			b.vault.onRename = (from, to) => {
+				renameFileObject(b.vault, from, to);
+				paneB.dispatch({});
+			};
+			const rename = b.vault.rename.bind(b.vault);
+			const steps: string[] = [];
+			b.vault.rename = async (from, to) => {
+				await rename(from, to);
+				steps.push(to);
+				await delay(10);
+				paneB.typeHere(` During ${steps.length}.`);
+				if (saving) {
+					paneB.save();
+				}
+				await delay(10);
+			};
+			a.vault.move(NOTE, CASE_ONLY);
+			await settle(a, b);
+			paneB.typeHere(' After.');
+			await settle(a, b);
+			paneA.save();
+			paneB.save();
+			await settle(a, b);
+
+			expect(steps).toEqual(['Notes/A (renaming).md', CASE_ONLY]);
+			const typed = ORIGINAL[NOTE]!.replace('A quiet day.', 'A quiet day. Before. During 1. During 2. After.');
+			expect(hub.text(noteDocName(id))).toBe(typed);
+			expect(index()['a.md']!.id).toBe(id);
+			for (const d of [a, b]) {
+				expect(d.vault.files.get(CASE_ONLY)).toBe(typed);
+				expect(d.vault.files.has('Notes/A (renaming).md')).toBe(false);
+				expect(d.problems).toEqual([]);
+			}
+			expect(paneA.text()).toBe(typed);
+			expect(paneB.text()).toBe(typed);
+			expect(paneB.file).toBe(CASE_ONLY);
+			paneA.close();
+			paneB.close();
+		});
+	}
+
+	it('drops what a rename kept when the editor switches files before the rename is done', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withPanes();
+		const id = index()['A.md']!.id;
+		b.vault.onRename = (from, to) => {
+			renameFileObject(b.vault, from, to);
+			paneB.dispatch({});
+		};
+		const rename = b.vault.rename.bind(b.vault);
+		let switched = false;
+		b.vault.rename = async (from, to) => {
+			await rename(from, to);
+			if (!switched) {
+				switched = true;
+				// Mid-rename, the pane opens B, then the renamed note again.
+				paneB.loadThenPoint('Notes/B.md', ORIGINAL['Notes/B.md']!);
+				await delay(10);
+				paneB.nudge();
+			}
+		};
+		a.vault.move(NOTE, CASE_ONLY);
+		await settle(a, b);
+		paneB.loadThenPoint(CASE_ONLY, b.vault.files.get(CASE_ONLY)!);
+		await settle(a, b);
+		paneB.nudge();
+		await settle(a, b);
+		paneA.save();
+		paneB.save();
+		await settle(a, b);
+
+		expect(hub.text(noteDocName(id))).toBe(ORIGINAL[NOTE]);
+		expect(hub.text(noteDocName(index()['B.md']!.id))).toBe(ORIGINAL['Notes/B.md']);
+		for (const d of [a, b]) {
+			expect(d.vault.files.get(CASE_ONLY)).toBe(ORIGINAL[NOTE]);
+			expect(d.vault.files.get('Notes/B.md')).toBe(ORIGINAL['Notes/B.md']);
+			expect(d.problems).toEqual([]);
+		}
+		expect(paneB.text()).toBe(ORIGINAL[NOTE]);
+		paneA.close();
+		paneB.close();
+	});
+
+	it('downloads a note skipped for a case clash once the open note here is renamed', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withPanes();
+		a.vault.ignoresCase = false;
+		a.vault.write(CASE_ONLY, 'Lower-case distinct note.\n');
+		await settle(a, b);
+		expect(b.vault.files.has(CASE_ONLY)).toBe(false);
+		expect(b.problems).toHaveLength(1);
+
+		b.vault.move(NOTE, 'Notes/Resolved.md');
+		await settle(a, b);
+		expect(b.vault.files.get(CASE_ONLY)).toBe('Lower-case distinct note.\n');
+		expect(b.vault.files.get('Notes/Resolved.md')).toBe(ORIGINAL[NOTE]);
+		expect(hub.text(noteDocName(index()['a.md']!.id))).toBe('Lower-case distinct note.\n');
+		expect(paneB.file).toBe('Notes/Resolved.md');
+		expect(paneB.text()).toBe(ORIGINAL[NOTE]);
+		expect(b.problems).toHaveLength(1);
+		paneA.close();
+		paneB.close();
 	});
 });

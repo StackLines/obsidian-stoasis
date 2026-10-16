@@ -5,6 +5,64 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-16
+
+Tags a note when you ask, adds the Brain settings, and lets you choose
+between a conflict copy and its note.
+
+### Added
+
+- **Tag this note now**, from the command palette or the editor menu of a
+  Markdown note. Your server suggests tags and properties for the note's text
+  and keeps nothing; a window shows each proposed change and where it came
+  from, and **Apply** writes them into the frontmatter, unless the note's
+  properties changed since the suggestion. It works for notes that are not
+  synced, on a device that is only paired.
+- Frontmatter changes follow version 2 of the tagging contract: new
+  properties, base properties that are only ever filled in, task and open
+  point lists that are replaced, and the new order of added properties.
+- A **Brain** section in the settings tab, when your server offers it:
+  **Scan my notes automatically**, and for the owner of the synced space its
+  scan mode, base metadata, and **Add base metadata to existing notes**.
+- **Compare with the synced note**, for a conflict copy: shows the lines that
+  differ, then **Use conflict copy** or **Keep current synced note**, moving
+  the copy to the trash. Nothing is written if either file changed or was
+  replaced while the window was open, and the copy is kept if it changes, or
+  either file goes, before it would go to the trash; if it changes in the
+  instant it is trashed, the trash keeps that version.
+- A warning, once for each folder, when the vault seems to be in iCloud Drive
+  or Dropbox, Obsidian Sync is turned on, the folder may be in a git working
+  tree, or new attachments go outside the folder.
+
+### Changed
+
+- The disclosure says that a note you tag is sent to your server.
+- The notice for a new conflict copy says how to compare it with the note.
+
+### Fixed
+
+- Renaming a note so that only the case of its name changes (`note.md` to
+  `Note.md`) failed on devices whose file system ignores case, as on macOS,
+  iOS and Windows.
+- Two notes whose names differ only in case stopped every later note from
+  arriving on a device whose file system ignores case. That device now skips
+  the one it cannot keep, with a warning, and syncs the rest.
+- Text typed in a note open in an editor while the note was renamed could be
+  added to the note twice, or, during a case-only rename, lost.
+- An editor that reloaded a note's file while edits from another device were
+  arriving could undo those edits.
+- Opening a note in an editor and switching to another note straight away,
+  while an edit from another device was still on its way to the first note's
+  file, could put the first note's text into the second note, on every synced
+  device. This was already the case in 0.1.1.
+- Text typed in a note just before switching to another could be added to
+  the note twice when another device edited the note at the same moment.
+- Properties your server adds to a note open in an editor no longer move the
+  cursor out of the text you are typing. One case remains: text typed at the
+  very start of a note while your server adds its first properties can end up
+  in front of them, so that they show as body text. Nothing is lost, and the
+  README says how to put them back at the start.
+
 ## [0.1.1] - 2026-10-15
 
 Downloads your space to a new device in one step, and fixes a note's text

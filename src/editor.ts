@@ -1,6 +1,8 @@
 import {
 	Annotation,
+	EditorSelection,
 	Transaction,
+	type ChangeSet,
 	type EditorState,
 	type Extension,
 	type TransactionSpec,
@@ -14,11 +16,20 @@ import type { TextEdit } from './sync/text';
 const fromSync = Annotation.define<boolean>();
 
 /**
+ * A file as the app gives it to an editor. The app keeps one object per file
+ * and changes its path when the file is renamed, so the same object under a
+ * new path is a rename, and another object is another file.
+ */
+export interface ShownFile {
+	readonly path: string;
+}
+
+/**
  * The file an editor shows. The app changes it on the view itself, without a
  * transaction, so an update can see the new file before the new file's text.
  */
-function filePath(view: EditorView): string | null {
-	return view.state.field(editorInfoField, false)?.file?.path ?? null;
+function shownFile(view: EditorView): ShownFile | null {
+	return view.state.field(editorInfoField, false)?.file ?? null;
 }
 
 /**
@@ -49,29 +60,41 @@ export interface EditorViewLike {
 /** Keeps one editor linked to the note of the file it shows. */
 export class SyncedEditor {
 	private readonly handle: EditorHandle;
+	/** The file the editor showed at its last update. */
+	private shown: ShownFile | null;
 
 	constructor(
 		sync: EditorSync,
 		private readonly view: EditorViewLike,
-		private readonly path: () => string | null,
+		private readonly file: () => ShownFile | null,
 	) {
+		this.shown = file();
 		this.handle = sync.attach(
 			{
 				text: () => this.view.state.doc.toString(),
 				applyRemote: (edits) => this.applyRemote(edits),
 			},
-			path(),
+			this.shown?.path ?? null,
 		);
 	}
 
 	/** Called after each view update, with the transactions it applied. */
 	update(transactions: readonly Transaction[]): void {
-		const path = this.path();
+		const file = this.file();
+		const path = file?.path ?? null;
+		const previous = this.shown;
+		this.shown = file;
 		if (path !== this.handle.path) {
-			// The editor shows another file. Text changes in this update came
-			// with the switch, not from typing, and the text may still be the
-			// previous file's: send nothing, and let the new note check it.
-			this.handle.setPath(path);
+			// The editor shows another file, or the same file under a new name.
+			// Text changes in this update came with the switch, not from
+			// typing, and the text may still be the previous file's: send
+			// nothing, and let the new note check it. Only the same file, with
+			// nothing loaded in this update, is a rename.
+			const renamed =
+				file !== null &&
+				file === previous &&
+				!transactions.some((tr) => tr.docChanged && tr.annotation(fromSync) !== true && isLoad(tr));
+			this.handle.setPath(path, renamed);
 			return;
 		}
 		this.handle.resume();
@@ -80,7 +103,7 @@ export class SyncedEditor {
 				continue;
 			}
 			if (isLoad(tr)) {
-				this.handle.loaded();
+				this.handle.loaded(tr.newDoc.toString());
 				continue;
 			}
 			const edits: TextEdit[] = [];
@@ -99,15 +122,35 @@ export class SyncedEditor {
 		if (edits.length === 0) {
 			return;
 		}
-		this.view.dispatch({
-			changes: edits.map((edit) => ({
+		const state = this.view.state;
+		const changes = state.changes(
+			edits.map((edit) => ({
 				from: edit.pos,
 				to: edit.pos + edit.del,
 				insert: edit.ins,
 			})),
+		);
+		const spec: TransactionSpec = {
+			changes,
 			annotations: [fromSync.of(true), Transaction.addToHistory.of(false)],
-		});
+		};
+		// Text inserted at the very start goes before a cursor there: that is
+		// where the server adds frontmatter to a note that had none, and the
+		// next keystroke belongs in the body, not in front of the `---`.
+		if (edits.some((edit) => edit.pos === 0 && edit.ins !== '')) {
+			spec.selection = keepAfterStart(state.selection, changes);
+		}
+		this.view.dispatch(spec);
 	}
+}
+
+/** Maps a selection through changes, moving ends at the start past text inserted there. */
+function keepAfterStart(selection: EditorSelection, changes: ChangeSet): EditorSelection {
+	const map = (pos: number) => changes.mapPos(pos, pos === 0 ? 1 : -1);
+	return EditorSelection.create(
+		selection.ranges.map((range) => EditorSelection.range(map(range.anchor), map(range.head))),
+		selection.mainIndex,
+	);
 }
 
 /**
@@ -116,7 +159,7 @@ export class SyncedEditor {
  */
 export function syncedEditors(sync: EditorSync): Extension {
 	return ViewPlugin.define((view) => {
-		const editor = new SyncedEditor(sync, view, () => filePath(view));
+		const editor = new SyncedEditor(sync, view, () => shownFile(view));
 		return {
 			update: (update) => editor.update(update.transactions),
 			destroy: () => editor.destroy(),
