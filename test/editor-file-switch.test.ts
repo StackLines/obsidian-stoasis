@@ -582,6 +582,10 @@ async function slowPair(): Promise<{ hub: MemoryHub; a: Device; b: Device }> {
 	return { hub, a, b };
 }
 
+function count(text: string, part: string): number {
+	return text.split(part).length - 1;
+}
+
 describe('switching away from a note before its editor links', () => {
 	it('never puts the note into the next one, while an edit from another device is still on its way to disk', async () => {
 		const { hub, a, b } = await slowPair();
@@ -628,6 +632,41 @@ describe('switching away from a note before its editor links', () => {
 		pane.close();
 		await settle(a, b);
 		expect(a.editors.size).toBe(0);
+	});
+
+	it('adds text typed just before leaving a note once, when another device edits the note at that moment', async () => {
+		const { hub, a, b } = await slowPair();
+		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		pane.select(pane.text().indexOf('A quiet day.') + 'A quiet day.'.length);
+		pane.typeHere(' Typed here before leaving.');
+		await settle(a, b);
+		// The app saves A as it leaves; the other device's line reaches this
+		// device before it handles that save.
+		pane.save();
+		pane.point('Notes/B.md');
+		pane.load(a.vault.files.get('Notes/B.md')!);
+		serverEdit(hub, 'A.md', (t) => t.replace('## Links', 'Line from the other device.\n\n## Links'))();
+		await settle(a, b);
+		await delay(WRITE_DELAY + 50);
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+
+		const aText = ORIGINAL['Notes/A.md']!.replace('A quiet day.', 'A quiet day. Typed here before leaving.').replace(
+			'## Links',
+			'Line from the other device.\n\n## Links',
+		);
+		expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(aText);
+		expect(hub.text(noteDocName(index()['B.md']!.id))).toBe(ORIGINAL['Notes/B.md']);
+		for (const d of [a, b]) {
+			expect(count(d.vault.files.get('Notes/A.md')!, 'Typed here before leaving.')).toBe(1);
+			expect(d.vault.files.get('Notes/A.md')).toBe(aText);
+			expect(d.vault.files.get('Notes/B.md')).toBe(ORIGINAL['Notes/B.md']);
+			expect(d.problems).toEqual([]);
+		}
+		pane.close();
 	});
 });
 
