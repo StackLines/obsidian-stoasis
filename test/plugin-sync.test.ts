@@ -90,6 +90,23 @@ describe('plugin sync', () => {
 		await eventually(() => expect(status(b)).toBe('Stoasis: synced'), 8000);
 	}, 30_000);
 
+	it('warns once when attachments go outside the synced folder', async () => {
+		notices.length = 0;
+		const a = await device('ABCD2345', 'Notes', { 'Notes/Hello.md': '# Hello\n' });
+		await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+		const warning = (n: string) => n.startsWith('New attachments go to "/", outside "Notes".');
+		await eventually(() => expect(notices.filter(warning)).toHaveLength(1), 8000);
+		expect(a.settings.folderWarnings).toEqual(['Notes\nattachments']);
+
+		// Not again when sync starts again, or after the plugin is loaded again.
+		await a.setSyncEnabled(false);
+		await a.setSyncEnabled(true);
+		await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+		expect(notices.filter(warning)).toHaveLength(1);
+		const stored = (a as unknown as { storedData: { folderWarnings?: unknown } }).storedData;
+		expect(stored.folderWarnings).toEqual(['Notes\nattachments']);
+	}, 30_000);
+
 	it('keeps edits made while the server is unreachable and sends them later', async () => {
 		const a = await device('ABCD2345', 'Notes', { 'Notes/Day.md': 'start' });
 		const b = await device('EFGH2345', 'Notes');
@@ -146,9 +163,11 @@ describe('plugin sync', () => {
 		const a = await device('ABCD2345', 'Notes', files);
 		await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
 		// The first device had nothing to download.
-		expect(shownNotices.filter((n) => n.duration === 0)).toEqual([]);
+		expect(shownNotices.filter((n) => n.message.startsWith('Stoasis: downloading'))).toEqual([]);
 
 		const app = new App();
+		// Attachments go inside the folder, so there is no folder warning.
+		app.vault.adapter.hidden.set('.obsidian/app.json', '{"attachmentFolderPath":"Personal/Attachments"}');
 		const b = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.1.0' } as never) as TestPlugin;
 		plugins.push(b);
 		await b.onload();
