@@ -651,4 +651,3 @@ describe('Brain, with an answer to a change that arrives after a reload', () => 
 		expect(brain.view).toMatchObject({ kind: 'ready', owner: false, message: "Only the space's owner can change this." });
 	});
 });
-
