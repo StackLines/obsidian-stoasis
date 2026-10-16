@@ -91,15 +91,21 @@ export interface EngineOptions {
 
 /** A link between an open editor and a note's shared text. */
 export interface NoteLink {
+	/** The note's id: the same for every link to it, under any name. */
+	readonly id: string;
 	readonly text: Y.Text;
 	/**
 	 * Merges the editor's text, which may predate remote changes, into the
 	 * note. `loaded` is the file's text the app last loaded into the editor,
 	 * when known: the merge starts from the state the file had then, so text
-	 * that reached the file after the load is not taken as deleted. Refuses,
-	 * and reports it, when that would replace most of the note's text.
+	 * that reached the file after the load is not taken as deleted. `since`,
+	 * when given, is the state the editor last matched, from `snapshot`, and
+	 * the merge starts there instead. Refuses, and reports it, when that would
+	 * replace most of the note's text.
 	 */
-	adopt(editorText: string, loaded?: string | null): void;
+	adopt(editorText: string, loaded?: string | null, since?: MergeBase | null): void;
+	/** The note's state now, to merge from later with `adopt`. */
+	snapshot(): MergeBase;
 	/**
 	 * Whether `text` is this note's file as this device knows it: on disk
 	 * when linked, as last synced, or as the note holds it now.
@@ -403,13 +409,15 @@ export class SyncEngine {
 		note.editors++;
 		let released = false;
 		return {
+			id: note.id,
 			text: note.text,
-			adopt: (editorText, loaded) => {
+			snapshot: () => captureBase(note.open.doc, NOTE_FIELD),
+			adopt: (editorText, loaded, since) => {
 				const current = note.text.toJSON();
 				if (editorText === current) {
 					return;
 				}
-				const base = this.baseFor(note, loaded);
+				const base = since ?? this.baseFor(note, loaded);
 				if (base === null && current !== '' && editorText !== '') {
 					// Nothing on this device says how the two relate: show the
 					// note's text, and keep the editor's as a note of its own.
