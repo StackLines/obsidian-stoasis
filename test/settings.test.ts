@@ -520,6 +520,24 @@ describe('settings tab: Brain', () => {
 		expect(button('Add base metadata to existing notes')).toBeDefined();
 	});
 
+	it('reads the space again after an empty answer to the backfill, and shows it as asked for', async () => {
+		const { button, setting, control, api } = await brain();
+		api.spaces[0]!.scanMode = 'auto';
+		api.calls = [];
+		await button('Add base metadata to existing notes').click();
+		expect(api.calls).toEqual(['backfill s1', 'spaces']);
+		expect(setting('Existing notes').desc).toContain('being added');
+		expect(control('Scan mode for your space').value).toBe('auto');
+	});
+
+	it('shows the backfill as asked for when the space cannot be read again after an empty answer', async () => {
+		const { button, setting, texts, api } = await brain();
+		api.fail.listSpaces = new ApiError('network', 0);
+		await button('Add base metadata to existing notes').click();
+		expect(setting('Existing notes').desc).toContain('being added');
+		expect(texts()).not.toContain("Couldn't reach the server. Nothing was changed.");
+	});
+
 	it('shows the switch as off when the server says base metadata was turned off meanwhile', async () => {
 		const { button, control, names, texts } = await brain((api) => {
 			api.fail.requestBaseBackfill = new ApiError('base-metadata-off', 409);
