@@ -204,7 +204,8 @@ deleted or replaced while the window was open, nothing is changed; if either
 text changed, the window shows the differences again. While the note has
 typing in it that is not saved yet, **Use conflict copy** shows them again
 too; choose once more after the note is saved. The copy is kept if it changes,
-or either file goes, at any point before it would go to the trash.
+or either file goes, before it would go to the trash; if it changes in the
+instant it is trashed, the trash keeps that version.
 
 ### Folder warnings
 
