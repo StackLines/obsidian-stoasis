@@ -208,7 +208,10 @@ export class EditorHandle {
 	/** The text the app loaded into the editor while it showed `path`, until linked. */
 	private loadedText: string | null = null;
 	private holding = false;
-	/** Set when the file was renamed while linked, until the editor links again. */
+	/**
+	 * Set when the file the editor shows was renamed while linked, until the
+	 * editor links again. Any other change of file or a load drops it.
+	 */
 	private renamed: Snapshot | null = null;
 
 	constructor(
@@ -233,14 +236,17 @@ export class EditorHandle {
 		return this.holding;
 	}
 
-	/** The editor now shows another file (or the same file under a new name). */
-	setPath(path: string | null): void {
+	/**
+	 * The editor now shows another file, or with `renamed` the same file under
+	 * a new name. Only a rename keeps what the editor was linked to; still
+	 * linking after an earlier rename, that snapshot still holds.
+	 */
+	setPath(path: string | null, renamed = false): void {
 		if (path === this.path) {
 			return;
 		}
 		const old = this.path;
-		// Still linking after an earlier rename: that snapshot still holds.
-		this.renamed = this.binding !== null ? this.binding.snapshot() : this.linking ? this.renamed : null;
+		this.renamed = !renamed ? null : this.binding !== null ? this.binding.snapshot() : this.linking ? this.renamed : null;
 		this.unbind();
 		this.holding = false;
 		this.path = path;

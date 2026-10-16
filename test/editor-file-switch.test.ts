@@ -6,7 +6,7 @@
 import 'fake-indexeddb/auto';
 import { EditorState, Transaction, type TransactionSpec } from '@codemirror/state';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SyncedEditor, isLoad, type EditorViewLike } from '../src/editor';
+import { SyncedEditor, isLoad, type EditorViewLike, type ShownFile } from '../src/editor';
 import { EditorSync } from '../src/sync/binding';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { SyncEngine, emptyEngineState, type EngineState } from '../src/sync/engine';
@@ -76,6 +76,34 @@ async function settle(...devices: Device[]): Promise<void> {
 	}
 }
 
+/** The app's file objects: one per file, whose path changes when the file is renamed. */
+const fileObjects = new WeakMap<FakeVault, Map<string, ShownFile>>();
+
+function fileObject(vault: FakeVault, path: string | null): ShownFile | null {
+	if (path === null) {
+		return null;
+	}
+	let objects = fileObjects.get(vault);
+	if (objects === undefined) {
+		objects = new Map();
+		fileObjects.set(vault, objects);
+	}
+	let object = objects.get(path);
+	if (object === undefined) {
+		object = { path };
+		objects.set(path, object);
+	}
+	return object;
+}
+
+/** The app renames a file: its object, which open views hold, gets the new path. */
+function renameFileObject(vault: FakeVault, from: string, to: string): void {
+	const object = fileObject(vault, from) as { path: string };
+	fileObjects.get(vault)?.delete(from);
+	object.path = to;
+	fileObjects.get(vault)?.set(to, object);
+}
+
 /**
  * One editor pane as the app drives it: a CodeMirror state, the file the
  * pane shows (changed without a transaction, like the app's view), and saves
@@ -83,7 +111,7 @@ async function settle(...devices: Device[]): Promise<void> {
  */
 class Pane implements EditorViewLike {
 	state: EditorState;
-	file: string | null;
+	private shown: ShownFile | null;
 	/** What the app last loaded or saved; it saves only when the text differs. */
 	private data: string;
 	private editor: SyncedEditor;
@@ -93,10 +121,15 @@ class Pane implements EditorViewLike {
 		private readonly vault: FakeVault,
 		file: string | null,
 	) {
-		this.file = file;
+		this.shown = fileObject(vault, file);
 		this.data = file === null ? '' : (vault.files.get(file) ?? '');
 		this.state = EditorState.create({ doc: this.data });
-		this.editor = new SyncedEditor(sync, this, () => this.file);
+		this.editor = new SyncedEditor(sync, this, () => this.shown);
+	}
+
+	/** The path of the file the pane shows. */
+	get file(): string | null {
+		return this.shown?.path ?? null;
 	}
 
 	text(): string {
@@ -121,7 +154,7 @@ class Pane implements EditorViewLike {
 
 	/** The app points the pane at another file; nothing is dispatched. */
 	point(file: string | null): void {
-		this.file = file;
+		this.shown = fileObject(this.vault, file);
 	}
 
 	/** Any update without a text change: a selection, focus or layout change. */
@@ -148,10 +181,10 @@ class Pane implements EditorViewLike {
 	/** The app replaces the editor's state, which recreates the view plugins. */
 	replaceState(file: string | null, text: string): void {
 		this.editor.destroy();
-		this.file = file;
+		this.shown = fileObject(this.vault, file);
 		this.data = text;
 		this.state = EditorState.create({ doc: text });
-		this.editor = new SyncedEditor(this.sync, this, () => this.file);
+		this.editor = new SyncedEditor(this.sync, this, () => this.shown);
 	}
 
 	type(pos: number, insert: string): void {
@@ -363,6 +396,110 @@ describe('switching files in one editor', () => {
 		expect(pane.text()).toBe(edited);
 		expect(a.vault.files.get('Notes/B.md')).toBe(edited);
 		expect(b.vault.files.get('Notes/A.md')).toBe(ORIGINAL['Notes/A.md']);
+		pane.close();
+	});
+
+	it('does not take a quick switch away and back for a rename, while the other file is still being read', async () => {
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		const read = a.vault.read.bind(a.vault);
+		let releaseB!: () => void;
+		const pendingB = new Promise<void>((resolve) => {
+			releaseB = resolve;
+		});
+		a.vault.read = async (path) => {
+			if (path === 'Notes/B.md') {
+				await pendingB;
+			}
+			return read(path);
+		};
+		// B loads, and the pane points at it before the update arrives; linking
+		// B waits for its file.
+		pane.loadThenPoint('Notes/B.md', ORIGINAL['Notes/B.md']!);
+		await delay(10);
+		expectIntact(hub, a, b);
+		// Back to A while the pane still shows B's text.
+		pane.point('Notes/A.md');
+		pane.nudge();
+		await delay(10);
+		expectIntact(hub, a, b);
+		releaseB();
+		await settle(a, b);
+		expectIntact(hub, a, b);
+		pane.save();
+		await settle(a, b);
+		expectIntact(hub, a, b);
+		pane.load(ORIGINAL['Notes/A.md']!);
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expectIntact(hub, a, b);
+		expect(pane.text()).toBe(ORIGINAL['Notes/A.md']);
+		expect(a.problems).toEqual([]);
+		pane.close();
+	});
+
+	it('forgets a rename once the pane shows another file, before the renamed note links again', async () => {
+		const { hub, a, b } = await pair();
+		a.vault.onRename = (from, to) => renameFileObject(a.vault, from, to);
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		a.vault.move('Notes/A.md', 'Notes/Renamed.md');
+		expect(pane.file).toBe('Notes/Renamed.md');
+		await settle(a, b);
+		const read = a.vault.read.bind(a.vault);
+		let release!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		a.vault.read = async (path) => {
+			if (path === 'Notes/Renamed.md' || path === 'Notes/B.md') {
+				await pending;
+			}
+			return read(path);
+		};
+		// The pane's next update sees the new name; linking it waits for the file.
+		pane.nudge();
+		await delay(10);
+		// To B and back while the renamed note is still linking.
+		pane.loadThenPoint('Notes/B.md', ORIGINAL['Notes/B.md']!);
+		await delay(10);
+		pane.point('Notes/Renamed.md');
+		pane.nudge();
+		await delay(10);
+		release();
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(Object.keys(index).sort()).toEqual(['B.md', 'C.md', 'Renamed.md']);
+		expect(hub.text(noteDocName(index['Renamed.md']!.id))).toBe(ORIGINAL['Notes/A.md']);
+		expect(hub.text(noteDocName(index['B.md']!.id))).toBe(ORIGINAL['Notes/B.md']);
+		for (const d of [a, b]) {
+			expect(d.vault.files.get('Notes/Renamed.md')).toBe(ORIGINAL['Notes/A.md']);
+			expect(d.vault.files.get('Notes/B.md')).toBe(ORIGINAL['Notes/B.md']);
+		}
+		expect(a.problems).toEqual([]);
+		pane.close();
+	});
+
+	it('does not take a rename for one when the same update loaded other text', async () => {
+		const { hub, a, b } = await pair();
+		a.vault.onRename = (from, to) => renameFileObject(a.vault, from, to);
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		a.vault.move('Notes/A.md', 'Notes/Renamed.md');
+		await settle(a, b);
+		// The pane's first update after the rename also loads other text.
+		pane.load(ORIGINAL['Notes/B.md']!);
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(hub.text(noteDocName(index['Renamed.md']!.id))).toBe(ORIGINAL['Notes/A.md']);
+		expect(b.vault.files.get('Notes/Renamed.md')).toBe(ORIGINAL['Notes/A.md']);
+		expect(pane.text()).toBe(ORIGINAL['Notes/A.md']);
 		pane.close();
 	});
 
@@ -727,16 +864,10 @@ describe('a case-only rename while the note is open', () => {
 		b.vault.ignoresCase = true;
 		const paneA = new Pane(a.editors, a.vault, 'Notes/A.md');
 		const paneB = new Pane(b.editors, b.vault, 'Notes/A.md');
-		// The app's views follow a renamed file without a transaction.
-		for (const [vault, pane] of [
-			[a.vault, paneA],
-			[b.vault, paneB],
-		] as const) {
-			vault.onRename = (from, to) => {
-				if (pane.file === from) {
-					pane.point(to);
-				}
-			};
+		// The app's views follow a renamed file without a transaction: they
+		// hold the same file object, whose path changes.
+		for (const vault of [a.vault, b.vault]) {
+			vault.onRename = (from, to) => renameFileObject(vault, from, to);
 		}
 		await settle(a, b);
 		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
