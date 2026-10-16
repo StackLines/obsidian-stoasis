@@ -50,10 +50,10 @@ between a conflict copy and its note.
 - An editor that reloaded a note's file while edits from another device were
   arriving could undo those edits.
 - Properties your server adds to a note open in an editor no longer move the
-  cursor out of the text you are typing.
-- Text typed at the start of a note at the moment your server added its first
-  properties could end up in front of them, which made the properties part of
-  the text. That text now goes after them.
+  cursor out of the text you are typing. One case remains: text typed at the
+  very start of a note while your server adds its first properties can end up
+  in front of them, so that they show as body text. Nothing is lost, and the
+  README says how to put them back at the start.
 
 ## [0.1.1] - 2026-10-15
 
