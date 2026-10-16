@@ -38,7 +38,7 @@ interface Device {
 	problems: string[];
 }
 
-async function device(hub: MemoryHub): Promise<Device> {
+async function device(hub: MemoryHub, writeDelayMs = 1): Promise<Device> {
 	const source = new MemoryDocSource(hub, memoryStores(memoryDisk()), true);
 	const vault = new FakeVault();
 	const state = emptyEngineState();
@@ -51,7 +51,7 @@ async function device(hub: MemoryHub): Promise<Device> {
 		folder: 'Notes',
 		state,
 		saveState: () => {},
-		writeDelayMs: 1,
+		writeDelayMs,
 		onProblem: (problem) => problems.push(problem),
 		onTracked: () => editors.refresh(),
 		onRelink: (path) => editors.relink(path),
@@ -559,6 +559,75 @@ describe('replacesMost', () => {
 		expect(replacesMost('abcdefghij', 'abcdezzzzz')).toBe(false);
 		expect(replacesMost('one\ntwo\nthree\n', 'one\ntwo\nfour\n')).toBe(false);
 		expect(replacesMost('the first line\nthe second line\n', 'Something different.\n')).toBe(true);
+	});
+});
+
+/** The app's write delay: a note edited elsewhere reaches the disk this long after its shared text. */
+const WRITE_DELAY = 500;
+
+/** Two devices as `pair` makes them, `a` writing notes after the app's delay. */
+async function slowPair(): Promise<{ hub: MemoryHub; a: Device; b: Device }> {
+	const hub = new MemoryHub();
+	const a = await device(hub, WRITE_DELAY);
+	const b = await device(hub);
+	for (const [path, text] of Object.entries(ORIGINAL)) {
+		a.vault.write(path, text);
+	}
+	await settle(a, b);
+	await delay(WRITE_DELAY + 50);
+	await settle(a, b);
+	for (const path of Object.keys(ORIGINAL)) {
+		expect(b.vault.files.get(path)).toBe(ORIGINAL[path]);
+	}
+	return { hub, a, b };
+}
+
+describe('switching away from a note before its editor links', () => {
+	it('never puts the note into the next one, while an edit from another device is still on its way to disk', async () => {
+		const { hub, a, b } = await slowPair();
+		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		const remote = (line: string) => (text: string) => text.replace('## Links', `${line}\n\n## Links`);
+		// B is closed here; the other device's edit is in its shared text
+		// on this device, not yet on this device's disk.
+		b.vault.write('Notes/B.md', remote('Remote line in B.')(ORIGINAL['Notes/B.md']!));
+		await settle(a, b);
+		expect(a.vault.files.get('Notes/B.md')).toBe(ORIGINAL['Notes/B.md']);
+		// Open B, then C straight away: the app saves as it leaves each file.
+		pane.save();
+		pane.point('Notes/B.md');
+		pane.load(a.vault.files.get('Notes/B.md')!);
+		pane.save();
+		pane.point('Notes/C.md');
+		const c = a.vault.files.get('Notes/C.md')!;
+		await delay(0);
+		pane.load(c);
+		await settle(a, b);
+		pane.nudge();
+		await settle(a, b);
+		// Another edit to B while C is shown.
+		b.vault.write('Notes/B.md', remote('Second remote line in B.')(b.vault.files.get('Notes/B.md')!));
+		await settle(a, b);
+		await delay(WRITE_DELAY + 50);
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+
+		const bText = remote('Second remote line in B.')(remote('Remote line in B.')(ORIGINAL['Notes/B.md']!));
+		expect(hub.text(noteDocName(index()['C.md']!.id))).toBe(ORIGINAL['Notes/C.md']);
+		expect(hub.text(noteDocName(index()['B.md']!.id))).toBe(bText);
+		for (const d of [a, b]) {
+			expect(d.vault.files.get('Notes/C.md')).toBe(ORIGINAL['Notes/C.md']);
+			expect(d.vault.files.get('Notes/B.md')).toBe(bText);
+			expect(d.vault.files.get('Notes/A.md')).toBe(ORIGINAL['Notes/A.md']);
+			expect(d.problems).toEqual([]);
+		}
+		expect(pane.file).toBe('Notes/C.md');
+		expect(pane.text()).toBe(ORIGINAL['Notes/C.md']);
+		pane.close();
+		await settle(a, b);
+		expect(a.editors.size).toBe(0);
 	});
 });
 
