@@ -268,6 +268,13 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		await this.mapFolder(folder, create, this.settings.syncEnabled);
 	}
 
+	brainApi(): NotesApi | null {
+		if (getPairingState(this.settings) !== 'paired') {
+			return null;
+		}
+		return new NotesApi(obsidianHttp, this.settings.serverUrl, this.settings.deviceKey);
+	}
+
 	downloadFolder(): string {
 		const name = folderNameFor(this.settings.spaceName, SUGGESTED_FOLDER);
 		return freeFolderName(name, (path) => this.canDownloadInto(path));
@@ -408,7 +415,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 				? `Paired${who}. To get your notes on this device, open the Stoasis settings and choose "Download to this device".`
 				: `Paired${who}.`,
 		);
-		this.settingTab?.display();
+		this.settingTab?.refresh();
 		this.restartSync();
 		return true;
 	}
@@ -632,7 +639,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			this.settings.folder = moved;
 			this.session?.engine.folderMoved(moved);
 			this.saveSoon();
-			this.settingTab?.display();
+			this.settingTab?.refresh();
 		} else if (oldPath.startsWith(`${mapped}/`) || folder.path.startsWith(`${mapped}/`)) {
 			this.rescanSoon();
 		}

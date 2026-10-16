@@ -540,6 +540,7 @@ export class PluginSettingTab {
 		public app: unknown,
 		public plugin: unknown,
 	) {}
+	hide(): void {}
 }
 
 export const openedModals: Modal[] = [];
