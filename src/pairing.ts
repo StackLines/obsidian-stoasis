@@ -89,6 +89,8 @@ export function describeApiError(error: unknown): string {
 			return 'The server does not allow this.';
 		case 'unavailable':
 			return 'The server is unavailable right now. Try again later.';
+		case 'base-metadata-off':
+			return 'Base metadata is turned off for this space.';
 		case 'not-found':
 		case 'invalid-request':
 		case 'unexpected':

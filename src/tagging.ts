@@ -1,89 +1,160 @@
-// Tag now: ask the server to suggest frontmatter properties for a note and
-// write them into the note. The server does not keep the note. Not exposed in
-// the interface yet; the server endpoint is still planned.
+// Tag now: ask the server to suggest frontmatter properties for a note, show
+// what would change and where each value came from, and write it into the
+// note when asked. The server keeps nothing. This module only turns a
+// suggestion into a proposal and applies it; src/tag-modal.ts shows it.
 
-/** Properties to set, as the server returns them: already normalised. */
-export type PropertyPatch = Record<string, unknown>;
+import type { PropertyMatch, Suggestion } from './api';
+import { applyPatch, splitTags, type PropertyPatch } from './frontmatter-patch';
 
-export interface PropertySuggester {
-	suggest(markdown: string): Promise<PropertyPatch>;
+/** The server takes at most 1 MiB of text, counted both in characters and in UTF-8 bytes. */
+export const MAX_TAG_TEXT = 1024 * 1024;
+
+export function tooLongToTag(markdown: string): boolean {
+	return markdown.length > MAX_TAG_TEXT || new TextEncoder().encode(markdown).length > MAX_TAG_TEXT;
+}
+
+/** One key that would change, and what the server matched to suggest it. */
+export interface ProposalLine {
+	key: string;
+	/** What the key would become, or what it gains, for reading. */
+	text: string;
+	sources: string[];
+}
+
+export interface Proposal {
+	lines: ProposalLine[];
+	/** Matches that explain no line: their values are already in the note. */
+	others: string[];
+	/** Contract errors, for reading. Any error means nothing is applied. */
+	errors: string[];
+	/** The patch to apply, or null when there is nothing to apply. */
+	patch: PropertyPatch | null;
+}
+
+/** The day for the `brain-tagged` stamp: UTC, like `brain-created`. */
+export function stampDate(now: Date): string {
+	return now.toISOString().slice(0, 10);
 }
 
 /**
- * A stand-in until the server offers suggestions: proposes the note's
- * inline #tags as `tags`, so the flow can be built and tested end to end.
+ * What applying the suggestion to `frontmatter` would change. A proposal with
+ * errors or without lines has no patch, so it can never be applied in part.
  */
-export class FakePropertySuggester implements PropertySuggester {
-	readonly requests: string[] = [];
+export function propose(
+	frontmatter: Readonly<Record<string, unknown>>,
+	suggestion: Suggestion,
+	date: string,
+): Proposal {
+	const errors = suggestion.errors.map(describeContractError);
+	const patch = suggestion.patch;
+	const result = patch === null ? frontmatter : applyPatch(frontmatter, patch, date);
 
-	suggest(markdown: string): Promise<PropertyPatch> {
-		this.requests.push(markdown);
-		const tags = new Set<string>();
-		for (const match of markdown.matchAll(/(?:^|\s)#([\p{L}\p{N}_/-]+)/gu)) {
-			const tag = match[1];
-			if (tag !== undefined && !/^\d+$/.test(tag)) {
-				tags.add(tag.toLowerCase());
+	const used = new Set<PropertyMatch>();
+	const lines: ProposalLine[] = [];
+	for (const [key, value] of Object.entries(result)) {
+		const had = Object.prototype.hasOwnProperty.call(frontmatter, key);
+		if (had && sameValue(frontmatter[key], value)) {
+			continue;
+		}
+		const before = had ? frontmatter[key] : undefined;
+		const added = Array.isArray(value) ? value.filter((item) => !listOf(before).includes(item)) : [];
+		const sources: string[] = [];
+		for (const match of suggestion.matches) {
+			if (explains(match, key, added)) {
+				sources.push(describeMatch(match));
+				used.add(match);
 			}
 		}
-		return Promise.resolve(tags.size > 0 ? { tags: [...tags].sort() } : {});
+		lines.push({ key, text: describeChange(key, before, value, suggestion.matches), sources });
 	}
+
+	const others = suggestion.matches.filter((match) => !used.has(match)).map(describeMatch);
+	const applicable = errors.length === 0 && lines.length > 0;
+	return { lines, others, errors, patch: applicable ? patch : null };
 }
 
 /**
- * Applies a patch to a note's frontmatter. Tags are added to the ones
- * already there; other properties are only set when the note has none.
- * Returns the names of the properties that changed.
+ * Applies the patch inside `processFrontMatter`, which hands over the note's
+ * frontmatter as it is now: keys are rewritten in the contract's order. True
+ * when anything changed.
  */
-export function applyPropertyPatch(frontmatter: Record<string, unknown>, patch: PropertyPatch): string[] {
-	const changed: string[] = [];
-	for (const [key, value] of Object.entries(patch)) {
-		if (key === 'tags') {
-			const existing = asList(frontmatter['tags']);
-			const added = asList(value).filter((tag) => !existing.includes(tag));
-			if (added.length > 0) {
-				frontmatter['tags'] = [...existing, ...added];
-				changed.push(key);
-			}
-		} else if (frontmatter[key] === undefined || frontmatter[key] === null || frontmatter[key] === '') {
-			frontmatter[key] = value;
-			changed.push(key);
-		}
+export function applyToFrontmatter(frontmatter: Record<string, unknown>, patch: PropertyPatch, date: string): boolean {
+	const result = applyPatch(frontmatter, patch, date);
+	if (result === frontmatter) {
+		return false;
 	}
-	return changed;
+	for (const key of Object.keys(frontmatter)) {
+		delete frontmatter[key];
+	}
+	Object.assign(frontmatter, result);
+	return true;
 }
 
-function asList(value: unknown): string[] {
-	if (typeof value === 'string') {
-		return value
-			.split(/[,\s]+/)
-			.map((tag) => tag.replace(/^#/, ''))
-			.filter((tag) => tag !== '');
+/** Whether a match is where one of a key's new values came from. */
+function explains(match: PropertyMatch, key: string, added: readonly unknown[]): boolean {
+	if (match.kind === 'person' && key === 'brain-people') {
+		return added.includes(`[[${match.name}]]`);
 	}
+	if (match.kind === 'topic' && key === 'brain-topics') {
+		return added.includes(match.id);
+	}
+	return false;
+}
+
+/** "Alice Stone: wikilink", or "Topic Garden: name in text (matched "gardens")". */
+export function describeMatch(match: PropertyMatch): string {
+	const name = match.name !== '' ? match.name : match.matched;
+	const label = match.kind === 'topic' ? `Topic ${name}` : name;
+	const reason = match.reason.replace(/_/g, ' ');
+	let text = reason === '' ? label : `${label}: ${reason}`;
+	if (match.matched !== '' && match.matched !== name) {
+		text += ` (matched "${match.matched}")`;
+	}
+	return text;
+}
+
+function describeChange(key: string, before: unknown, after: unknown, matches: readonly PropertyMatch[]): string {
+	if (!Array.isArray(after)) {
+		return typeof before === 'string' && before !== '' ? `${String(after)} (was ${before})` : String(after);
+	}
+	const shown = (item: unknown) => (key === 'brain-topics' ? topicName(item, matches) : String(item));
+	const previous = listOf(before);
+	const added = after.filter((item) => !previous.includes(item));
+	const removed = previous.filter((item) => !after.includes(item));
+	const parts: string[] = [];
+	if (added.length > 0) {
+		parts.push(`adds ${added.map(shown).join(', ')}`);
+	}
+	if (removed.length > 0) {
+		parts.push(`removes ${removed.map(shown).join(', ')}`);
+	}
+	return parts.length > 0 ? parts.join('; ') : after.length === 0 ? '(empty)' : after.map(shown).join(', ');
+}
+
+/** A topic is stored by id; show its name when the server matched it. */
+function topicName(id: unknown, matches: readonly PropertyMatch[]): string {
+	const match = matches.find((m) => m.kind === 'topic' && m.id === id && m.name !== '');
+	return match === undefined ? String(id) : match.name;
+}
+
+function listOf(value: unknown): unknown[] {
 	if (Array.isArray(value)) {
-		return value.filter((tag): tag is string => typeof tag === 'string' && tag !== '');
+		return value;
 	}
-	return [];
+	return typeof value === 'string' ? splitTags(value) : [];
 }
 
-/** Writes frontmatter through the app, which keeps the rest of the note as it is. */
-export type FrontmatterWriter = (
-	path: string,
-	update: (frontmatter: Record<string, unknown>) => void,
-) => Promise<void>;
-
-/** Suggests properties for a note and writes them. Returns the changed property names. */
-export async function tagNow(
-	path: string,
-	markdown: string,
-	suggester: PropertySuggester,
-	write: FrontmatterWriter,
-): Promise<string[]> {
-	const patch = await suggester.suggest(markdown);
-	let changed: string[] = [];
-	if (Object.keys(patch).length > 0) {
-		await write(path, (frontmatter) => {
-			changed = applyPropertyPatch(frontmatter, patch);
-		});
+export function describeContractError(error: { key: string | null; code: string }): string {
+	if (error.code === 'frontmatter_unparseable') {
+		return "The note's frontmatter can't be read. Fix it first, then tag the note again.";
 	}
-	return changed;
+	const code = error.code.replace(/_/g, ' ');
+	return error.key === null ? `The suggestion was refused: ${code}.` : `${error.key}: ${code}.`;
+}
+
+function sameValue(a: unknown, b: unknown): boolean {
+	if (Array.isArray(a) && Array.isArray(b)) {
+		return a.length === b.length && a.every((item, i) => sameValue(item, b[i]));
+	}
+	return a === b;
 }

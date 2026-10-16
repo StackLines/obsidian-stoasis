@@ -2,6 +2,8 @@
 // <server>/notes/api. The transport is injected so the client can be tested
 // without the app; see src/http.ts for the one used in Obsidian.
 
+import { readPatch, type PropertyPatch } from './frontmatter-patch';
+
 export interface HttpRequest {
 	url: string;
 	method: 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -29,6 +31,7 @@ export type ApiErrorKind =
 	| 'not-found'
 	| 'invalid-request'
 	| 'unavailable'
+	| 'base-metadata-off'
 	| 'unexpected';
 
 export class ApiError extends Error {
@@ -75,11 +78,43 @@ export interface Space {
 	role: SpaceRole;
 	scanMode: ScanMode;
 	archived: boolean;
+	/**
+	 * Whether the server's scanner stamps base metadata into new notes; null
+	 * when the server does not offer base metadata yet.
+	 */
+	baseMetadata: boolean | null;
+	/** Whether adding base metadata to the space's older notes was asked for. */
+	baseBackfillRequested: boolean;
 }
 
 export interface ScanSettings {
 	scanEnabled: boolean;
 	operatorEnabled: boolean;
+}
+
+/** Where a suggested value came from, as the server's matcher explains it. */
+export interface PropertyMatch {
+	/** `person` or `topic`; other kinds may come later. */
+	kind: string;
+	id: string;
+	name: string;
+	/** For example `wikilink`. */
+	reason: string;
+	/** The text in the note that matched. */
+	matched: string;
+}
+
+/** A tagging contract error: the key it is about (null for the patch as a whole) and its code. */
+export interface ContractError {
+	key: string | null;
+	code: string;
+}
+
+export interface Suggestion {
+	/** Null when there is nothing to add. */
+	patch: PropertyPatch | null;
+	matches: PropertyMatch[];
+	errors: ContractError[];
 }
 
 /** Calls under <server>/notes/api. The key is sent in a header, never a URL. */
@@ -167,6 +202,29 @@ export class NotesApi {
 		);
 	}
 
+	/** Asks for properties for a note's text. The server keeps nothing. */
+	async suggestProperties(markdown: string): Promise<Suggestion> {
+		return readSuggestion(await this.call('POST', '/suggest-properties', { markdown }));
+	}
+
+	/** Turns the scanner's base metadata on or off for a space. Owner only. */
+	async setBaseMetadata(spaceId: string, enabled: boolean): Promise<Space> {
+		return readSpace(
+			await this.call('PUT', `/spaces/${encodeURIComponent(spaceId)}/base-metadata`, {
+				base_metadata: enabled,
+			}),
+		);
+	}
+
+	/**
+	 * Asks for base metadata in the space's older notes too. Owner only. Returns
+	 * the updated space when the server sends it back.
+	 */
+	async requestBaseBackfill(spaceId: string): Promise<Space | null> {
+		const body = await this.call('POST', `/spaces/${encodeURIComponent(spaceId)}/base-metadata/backfill`);
+		return typeof body['space_id'] === 'string' ? readSpace(body) : null;
+	}
+
 	private async call(
 		method: HttpRequest['method'],
 		path: string,
@@ -229,6 +287,8 @@ function errorFor(response: HttpResponse): ApiError {
 			return new ApiError('invalid-request', response.status);
 		case 'database_unavailable':
 			return new ApiError('unavailable', response.status, retryAfter);
+		case 'base_metadata_off':
+			return new ApiError('base-metadata-off', response.status);
 	}
 	if (response.status === 401) {
 		return new ApiError('unauthenticated', response.status);
@@ -319,6 +379,48 @@ function readSpace(value: unknown): Space {
 		role: ROLES.includes(role as SpaceRole) ? (role as SpaceRole) : 'viewer',
 		scanMode: SCAN_MODES.includes(scanMode as ScanMode) ? (scanMode as ScanMode) : 'off',
 		archived: space['archived'] === true,
+		baseMetadata: typeof space['base_metadata'] === 'boolean' ? space['base_metadata'] : null,
+		baseBackfillRequested: space['base_backfill_requested'] === true,
+	};
+}
+
+function readSuggestion(body: Record<string, unknown>): Suggestion {
+	const raw = body['patch'];
+	let patch: PropertyPatch | null = null;
+	if (raw !== null && raw !== undefined) {
+		// A patch in any other shape is refused whole, never applied in part.
+		patch = readPatch(raw);
+		if (patch === null) {
+			throw new ApiError('unexpected', 200);
+		}
+	}
+	const matches = Array.isArray(body['matches']) ? body['matches'] : [];
+	const errors = Array.isArray(body['errors']) ? body['errors'] : [];
+	return {
+		patch,
+		matches: matches.flatMap((value: unknown) => {
+			if (typeof value !== 'object' || value === null) {
+				return [];
+			}
+			const match = value as Record<string, unknown>;
+			return [
+				{
+					kind: optionalString(match, 'kind'),
+					id: optionalString(match, 'id'),
+					name: optionalString(match, 'name'),
+					reason: optionalString(match, 'reason'),
+					matched: optionalString(match, 'matched'),
+				},
+			];
+		}),
+		errors: errors.flatMap((value: unknown) => {
+			if (typeof value !== 'object' || value === null) {
+				return [];
+			}
+			const error = value as Record<string, unknown>;
+			const key = error['key'];
+			return [{ key: typeof key === 'string' ? key : null, code: optionalString(error, 'code') }];
+		}),
 	};
 }
 
