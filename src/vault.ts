@@ -1,4 +1,5 @@
-import { TFile, TFolder, type App } from 'obsidian';
+import { Platform, TFile, TFolder, type App } from 'obsidian';
+import type { FolderProbe } from './folder-warnings';
 import type { VaultAdapter } from './sync/engine';
 import { parentFolders } from './sync/paths';
 
@@ -46,5 +47,39 @@ export function obsidianVault(app: App): VaultAdapter {
 			await vault.rename(file(from), to);
 		},
 		trash: (path) => fileManager.trashFile(file(path)),
+		// Desktop Linux file systems tell "note.md" from "Note.md"; those of
+		// macOS, iOS, Windows and Android storage usually do not.
+		ignoresCase: !(Platform.isDesktopApp && Platform.isLinux),
+	};
+}
+
+/** What the folder warnings read, through the app's file system adapter. */
+export function folderProbe(app: App): FolderProbe {
+	// Both adapters have full paths; the mobile one only since 1.7.2, so on an
+	// older mobile app the checks that need them are skipped.
+	const adapter = app.vault.adapter as App['vault']['adapter'] & { getFullPath?: (path: string) => string };
+	return {
+		configDir: app.vault.configDir,
+		fullPath: (path) => {
+			try {
+				return typeof adapter.getFullPath === 'function' ? adapter.getFullPath(path) : null;
+			} catch {
+				return null;
+			}
+		},
+		exists: async (path) => {
+			try {
+				return await adapter.exists(path);
+			} catch {
+				return false;
+			}
+		},
+		read: async (path) => {
+			try {
+				return await adapter.read(path);
+			} catch {
+				return null;
+			}
+		},
 	};
 }

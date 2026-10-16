@@ -16,6 +16,20 @@ export class FakeControlPlane {
 	/** Sync token handed out for every valid key. */
 	syncToken = 'good';
 	spaces: Array<Record<string, unknown>> = [];
+	/** The answer to suggest-properties for a note's text. */
+	suggest: (markdown: string) => { status: number; body: unknown } = () => ({
+		status: 200,
+		body: { patch: null, matches: [], errors: [] },
+	});
+	/** Every text sent to suggest-properties. */
+	readonly suggested: string[] = [];
+	scanSettings = { scan_enabled: true, operator_enabled: true };
+	/** False while the server does not offer base metadata yet: its endpoints are 404. */
+	baseMetadataLive = true;
+	/** Status for scan-settings, before a deploy that has it (404) or when it fails. */
+	scanSettingsStatus = 200;
+	/** Answers every owner-only change with 403, as for a space someone else owns. */
+	notOwner = false;
 	private nextKey = 1;
 
 	constructor(readonly server: string) {}
@@ -66,9 +80,51 @@ export class FakeControlPlane {
 					role: 'owner',
 					scan_mode: 'off',
 					archived: false,
+					...(this.baseMetadataLive ? { base_metadata: true, base_backfill_requested: false } : {}),
 				});
 			}
 			return json(201, this.spaces[0] ?? {});
+		}
+		if (method === 'POST' && path === '/suggest-properties') {
+			const body = JSON.parse(request.body ?? '{}') as { markdown: string };
+			this.suggested.push(body.markdown);
+			const answer = this.suggest(body.markdown);
+			return json(answer.status, answer.body);
+		}
+		if (path === '/scan-settings') {
+			if (this.scanSettingsStatus !== 200) {
+				return json(this.scanSettingsStatus, { error: 'not_found', message: 'Not found' });
+			}
+			if (method === 'PUT') {
+				const body = JSON.parse(request.body ?? '{}') as { scan_enabled: boolean };
+				this.scanSettings = { ...this.scanSettings, scan_enabled: body.scan_enabled };
+			}
+			return json(200, this.scanSettings);
+		}
+		const owned = /^\/spaces\/([^/]+)\/(scan-mode|base-metadata|base-metadata\/backfill)$/.exec(path);
+		if (owned !== null) {
+			const space = this.spaces.find((s) => s['space_id'] === owned[1]);
+			if (space === undefined || (owned[2] !== 'scan-mode' && !this.baseMetadataLive)) {
+				return json(404, { error: 'not_found', message: 'Not found' });
+			}
+			if (this.notOwner) {
+				return json(403, { error: 'forbidden', message: 'Owner only' });
+			}
+			const body = JSON.parse(request.body ?? '{}') as Record<string, unknown>;
+			if (owned[2] === 'scan-mode') {
+				space['scan_mode'] = body['scan_mode'];
+			} else if (owned[2] === 'base-metadata') {
+				space['base_metadata'] = body['base_metadata'];
+				if (body['base_metadata'] === false) {
+					space['base_backfill_requested'] = false;
+				}
+			} else {
+				if (space['base_metadata'] !== true) {
+					return json(409, { error: 'base_metadata_off', message: 'Base metadata is off' });
+				}
+				space['base_backfill_requested'] = true;
+			}
+			return json(200, space);
 		}
 		if (method === 'DELETE' && path === `/devices/${keyId}`) {
 			this.revoked.push(keyId);

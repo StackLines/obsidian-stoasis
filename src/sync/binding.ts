@@ -1,6 +1,12 @@
 import type * as Y from 'yjs';
 import type { NoteLink } from './engine';
-import { diffText, type TextEdit } from './text';
+import { diffText, type MergeBase, type TextEdit } from './text';
+
+/** The note an editor was linked to when its file got a new name, and its state then. */
+interface Snapshot {
+	id: string;
+	base: MergeBase;
+}
 
 /** One open editor, as the binding sees it. */
 export interface EditorPort {
@@ -12,6 +18,8 @@ export interface EditorPort {
 /** Finds the shared text of a synced note, or null when the file is not synced. */
 export interface NoteLinker {
 	link(path: string): Promise<NoteLink | null>;
+	/** Keeps what the editor merges against for `text`, loaded while showing `path`, until released. */
+	pin?(path: string, text: string): () => void;
 }
 
 /** Keeps one editor and one note's shared text equal while both change. */
@@ -21,19 +29,27 @@ class Binding {
 	/**
 	 * `claim` is the text the editor held when it last showed a file it was
 	 * not linked for, or null when its text is known to be this file's.
+	 * `loaded` is the file's text the app last loaded into it, when known.
+	 * `since` is set when the editor was linked to this same note under its
+	 * old name: the editor's text was the note's then.
 	 */
 	constructor(
 		private readonly link: NoteLink,
 		private readonly port: EditorPort,
 		claim: string | null,
+		loaded: string | null,
+		since: MergeBase | null,
 	) {
 		// The editor may show text from before remote changes arrived, or edits
 		// made while the note was loading: merge it in, then show the result.
 		// Right after the editor switched files, its text can still be the
 		// previous file's: merge it only if it started out as this note's.
-		// Otherwise the note's text wins and replaces it.
-		if (claim === null || link.owns(claim)) {
-			link.adopt(port.text());
+		// Otherwise the note's text wins and replaces it. After a rename, only
+		// what was typed since the editor let go of the old name is new.
+		if (since !== null) {
+			link.adopt(port.text(), null, since);
+		} else if (claim === null || link.owns(claim)) {
+			link.adopt(port.text(), loaded);
 		}
 		const edits = diffText(port.text(), link.text.toJSON());
 		if (edits.length > 0) {
@@ -65,6 +81,11 @@ class Binding {
 				}
 			}
 		}, this);
+	}
+
+	/** The note and its state now, which the editor's text matches. */
+	snapshot(): Snapshot {
+		return { id: this.link.id, base: this.link.snapshot() };
 	}
 
 	release(): void {
@@ -109,6 +130,7 @@ export class EditorSync {
 		this.linker = linker;
 		for (const handle of this.handles) {
 			handle.unbind();
+			handle.unpin();
 		}
 		this.refresh();
 	}
@@ -170,6 +192,11 @@ export class EditorSync {
 		handle.bind(linker);
 	}
 
+	/** @internal */
+	pin(path: string | null, text: string): (() => void) | null {
+		return path === null ? null : (this.linker?.pin?.(path, text) ?? null);
+	}
+
 	get size(): number {
 		return this.handles.size;
 	}
@@ -186,7 +213,19 @@ export class EditorHandle {
 	 * file's.
 	 */
 	private claim: string | null;
+	/** The text the app loaded into the editor while it showed `path`, until linked. */
+	private loadedText: string | null = null;
 	private holding = false;
+	/** Keeps the base of `loadedText` in the engine until the editor links. */
+	private release: (() => void) | null = null;
+	/**
+	 * Set when the file the editor shows was renamed while linked, until the
+	 * editor links to a note again. A rename can pass through a name the
+	 * engine does not track yet, as a case-only rename does: the snapshot
+	 * holds across it, and what is typed meanwhile is merged against it once
+	 * linked. Any other change of file or a load drops it.
+	 */
+	private renamed: Snapshot | null = null;
 
 	constructor(
 		private readonly owner: EditorSync,
@@ -210,17 +249,24 @@ export class EditorHandle {
 		return this.holding;
 	}
 
-	/** The editor now shows another file (or the same file under a new name). */
-	setPath(path: string | null): void {
+	/**
+	 * The editor now shows another file, or with `renamed` the same file under
+	 * a new name. Only a rename keeps what the editor was linked to; not
+	 * linked again since an earlier rename, that snapshot still holds.
+	 */
+	setPath(path: string | null, renamed = false): void {
 		if (path === this.path) {
 			return;
 		}
 		const old = this.path;
+		this.renamed = !renamed ? null : this.binding !== null ? this.binding.snapshot() : this.renamed;
 		this.unbind();
 		this.holding = false;
 		this.path = path;
 		// The text may still be the previous file's until the new one loads.
 		this.claim = this.port.text();
+		this.loadedText = null;
+		this.unpin();
 		this.owner.released(old);
 		this.owner.consider(this);
 	}
@@ -229,11 +275,16 @@ export class EditorHandle {
 	 * The app replaced the editor's whole text, by loading a file rather than
 	 * by typing. If the editor is about to show another file, that file was
 	 * loaded, so the text goes to no note yet: the editor stays unlinked until
-	 * its next update shows which file it belongs to.
+	 * its next update shows which file it belongs to. `text` is what was
+	 * loaded.
 	 */
-	loaded(): void {
+	loaded(text: string): void {
+		this.renamed = null;
 		this.unbind();
+		this.unpin();
 		this.holding = true;
+		this.loadedText = text;
+		this.release = this.owner.pin(this.path, text);
 	}
 
 	/**
@@ -255,7 +306,14 @@ export class EditorHandle {
 
 	detach(): void {
 		this.unbind();
+		this.unpin();
 		this.owner.detach(this);
+	}
+
+	/** @internal */
+	unpin(): void {
+		this.release?.();
+		this.release = null;
 	}
 
 	/** @internal */
@@ -274,8 +332,20 @@ export class EditorHandle {
 				}
 				this.linking = false;
 				if (link !== null) {
-					this.binding = new Binding(link, this.port, this.claim);
+					const renamed = this.renamed;
+					this.renamed = null;
+					const since = renamed !== null && renamed.id === link.id ? renamed.base : null;
+					const binding = new Binding(link, this.port, this.claim, this.loadedText, since);
+					if (attempt !== this.attempt) {
+						// Showing the note's text updated the editor, which by then
+						// showed another file: that switch already started over.
+						binding.release();
+						return;
+					}
+					this.binding = binding;
 					this.claim = null;
+					this.loadedText = null;
+					this.unpin();
 				}
 			},
 			() => {

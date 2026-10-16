@@ -63,8 +63,6 @@ class MemoryOpenDoc implements OpenDoc {
 		const remote = this.hub.doc(this.name);
 		const fromHub = Symbol('hub');
 		const toHub = Symbol('device');
-		Y.applyUpdate(remote, Y.encodeStateAsUpdate(this.doc, Y.encodeStateVector(remote)), toHub);
-		Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(remote, Y.encodeStateVector(this.doc)), fromHub);
 		const up = (update: Uint8Array, origin: unknown) => {
 			if (origin !== fromHub) {
 				Y.applyUpdate(remote, update, toHub);
@@ -77,8 +75,12 @@ class MemoryOpenDoc implements OpenDoc {
 				Y.applyUpdate(this.doc, update, fromHub);
 			}
 		};
+		// Listening before the first exchange, as a provider does: a change
+		// made while it is applied is sent too.
 		this.doc.on('update', up);
 		remote.on('update', down);
+		Y.applyUpdate(remote, Y.encodeStateAsUpdate(this.doc, Y.encodeStateVector(remote)), toHub);
+		Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(remote, Y.encodeStateVector(this.doc)), fromHub);
 		this.unlink = () => {
 			this.doc.off('update', up);
 			remote.off('update', down);
@@ -189,6 +191,14 @@ export class FakeVault implements VaultAdapter {
 	readonly trashed: string[] = [];
 	listener: VaultListener | null = null;
 	ioDelayMs = 0;
+	/**
+	 * Like a file system that ignores case, as on macOS and iOS: "Note.md" is
+	 * the file "note.md", so the engine may not create or move a file there.
+	 * The user's own moves still work, as the app's file explorer does them.
+	 */
+	ignoresCase = false;
+	/** Called as a file is renamed, as the app's open views follow it. */
+	onRename: ((from: string, to: string) => void) | null = null;
 	private readonly faults: Array<{ op: VaultOperation; path: string | null; message: string }> = [];
 	private readonly lateFaults: Array<{ path: string | null; message: string }> = [];
 
@@ -221,7 +231,7 @@ export class FakeVault implements VaultAdapter {
 
 	async create(path: string, text: string): Promise<void> {
 		await this.io('create', path);
-		if (this.files.has(path)) {
+		if (this.files.has(path) || this.inOtherCase(path)) {
 			throw new Error(`File exists: ${path}`);
 		}
 		this.files.set(path, text);
@@ -249,11 +259,12 @@ export class FakeVault implements VaultAdapter {
 	async rename(from: string, to: string): Promise<void> {
 		await this.io('rename', from);
 		const text = this.files.get(from);
-		if (text === undefined || this.files.has(to)) {
+		if (text === undefined || this.files.has(to) || this.inOtherCase(to)) {
 			throw new Error(`Cannot rename ${from} to ${to}`);
 		}
 		this.files.delete(from);
 		this.files.set(to, text);
+		this.onRename?.(from, to);
 		this.emit((l) => l.fileRenamed(to, from));
 	}
 
@@ -286,7 +297,31 @@ export class FakeVault implements VaultAdapter {
 		}
 		this.files.delete(from);
 		this.files.set(to, text);
+		this.onRename?.(from, to);
 		this.emit((l) => l.fileRenamed(to, from));
+	}
+
+	/**
+	 * Whether, ignoring case, another name for `path`, or for one of its
+	 * folders, is taken: a file system that ignores case finds it there.
+	 */
+	private inOtherCase(path: string): boolean {
+		if (!this.ignoresCase) {
+			return false;
+		}
+		const parts = path.split('/');
+		return [...this.files.keys()].some((other) => {
+			const otherParts = other.split('/');
+			for (let i = 0; i < Math.min(parts.length, otherParts.length); i++) {
+				const a = parts[i] as string;
+				const b = otherParts[i] as string;
+				if (a !== b) {
+					const sameKind = (i === parts.length - 1) === (i === otherParts.length - 1);
+					return sameKind && a.toLowerCase() === b.toLowerCase();
+				}
+			}
+			return false;
+		});
 	}
 
 	private async io(op: VaultOperation, path: string): Promise<void> {

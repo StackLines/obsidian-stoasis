@@ -1,4 +1,15 @@
-import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder } from 'obsidian';
+import {
+	getFrontMatterInfo,
+	MarkdownView,
+	Notice,
+	parseYaml,
+	Platform,
+	Plugin,
+	TAbstractFile,
+	TFile,
+	TFolder,
+	type Editor,
+} from 'obsidian';
 import { ApiError, NotesApi } from './api';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
@@ -33,7 +44,28 @@ import { emptyEngineState, SyncEngine } from './sync/engine';
 import { HocuspocusDocSource, SyncAccessError, type SyncAccess } from './sync/hocuspocus';
 import { indexedDbStores } from './sync/idb';
 import { checkCompatibility, describeIncompatibility } from './version';
-import { obsidianVault } from './vault';
+import { folderProbe, obsidianVault } from './vault';
+import { checkFolder, describeRisk, warningKey } from './folder-warnings';
+import { TagModal } from './tag-modal';
+import {
+	applyToFrontmatter,
+	propose,
+	reviewedFrontmatter,
+	stampDate,
+	stillReviewed,
+	tooLongToTag,
+} from './tagging';
+import type { PropertyPatch } from './frontmatter-patch';
+import {
+	conflictOriginal,
+	diffLines,
+	keepSyncedNote,
+	useConflictCopy,
+	type Compared,
+	type ConflictFiles,
+	type KeepResult,
+} from './conflict';
+import { ConflictModal } from './conflict-modal';
 
 /** How long to wait before saving after the sync state changed. */
 const SAVE_DELAY_MS = 2000;
@@ -45,6 +77,23 @@ const SPACE_RETRY_MS = 30_000;
 const REVOKE_RETRY_MS = 10 * 60_000;
 /** How long to wait before showing how far a download has come. */
 const DOWNLOAD_UPDATE_MS = 250;
+
+/** Thrown inside processFrontMatter to write nothing when a tag proposal is out of date. */
+class StaleProposal extends Error {}
+
+/** The properties in a note's text, as the app reads them; none when there are none or they cannot be read. */
+function propertiesOf(markdown: string): Record<string, unknown> {
+	const info = getFrontMatterInfo(markdown);
+	if (!info.exists) {
+		return {};
+	}
+	try {
+		const value: unknown = parseYaml(info.frontmatter);
+		return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+	} catch {
+		return {};
+	}
+}
 
 interface Session {
 	source: HocuspocusDocSource;
@@ -91,6 +140,57 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			this.handlePairingLink(params);
 		});
 		this.registerEditorExtension(syncedEditors(this.editors));
+
+		this.addCommand({
+			id: 'tag-note-now',
+			name: 'Tag this note now',
+			editorCheckCallback: (checking, editor, info) => {
+				const file = info.file;
+				if (file === null || file.extension !== 'md') {
+					return false;
+				}
+				if (!checking) {
+					void this.tagNote(file, editor);
+				}
+				return true;
+			},
+		});
+		this.addCommand({
+			id: 'compare-conflict-copy',
+			name: 'Compare with the synced note',
+			editorCheckCallback: (checking, _editor, info) => {
+				const file = info.file;
+				if (file === null || !this.isConflictCopy(file)) {
+					return false;
+				}
+				if (!checking) {
+					void this.compareConflict(file);
+				}
+				return true;
+			},
+		});
+		this.registerEvent(
+			this.app.workspace.on('editor-menu', (menu, editor, info) => {
+				const file = info.file;
+				if (file === null || file.extension !== 'md') {
+					return;
+				}
+				menu.addItem((item) =>
+					item
+						.setTitle('Tag this note now')
+						.setIcon('tags')
+						.onClick(() => void this.tagNote(file, editor)),
+				);
+				if (this.isConflictCopy(file)) {
+					menu.addItem((item) =>
+						item
+							.setTitle('Compare with the synced note')
+							.setIcon('diff')
+							.onClick(() => void this.compareConflict(file)),
+					);
+				}
+			}),
+		);
 
 		this.app.workspace.onLayoutReady(() => {
 			if (this.unloaded) {
@@ -236,6 +336,13 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		await this.mapFolder(folder, create, this.settings.syncEnabled);
 	}
 
+	brainApi(): NotesApi | null {
+		if (getPairingState(this.settings) !== 'paired') {
+			return null;
+		}
+		return new NotesApi(obsidianHttp, this.settings.serverUrl, this.settings.deviceKey);
+	}
+
 	downloadFolder(): string {
 		const name = folderNameFor(this.settings.spaceName, SUGGESTED_FOLDER);
 		return freeFolderName(name, (path) => this.canDownloadInto(path));
@@ -282,6 +389,214 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		}
 	}
 
+	// Tag now.
+
+	/** Whether `file` is a copy kept in a conflict, with its note still next to it. */
+	private isConflictCopy(file: TFile): boolean {
+		const original = conflictOriginal(file.path);
+		return original !== null && this.app.vault.getAbstractFileByPath(original) instanceof TFile;
+	}
+
+	/**
+	 * Shows a conflict copy against its note, to keep one of the two. Both
+	 * are read as open editors show them, unsaved typing included, and
+	 * checked again when a choice is made and as each is written or trashed:
+	 * if either was renamed, replaced or changed meanwhile, nothing is
+	 * written and the copy stays.
+	 */
+	async compareConflict(shown: TFile): Promise<void> {
+		const path = conflictOriginal(shown.path);
+		const copy = this.app.vault.getAbstractFileByPath(shown.path);
+		const note = path === null ? null : this.app.vault.getAbstractFileByPath(path);
+		if (!(copy instanceof TFile)) {
+			return;
+		}
+		if (path === null || !(note instanceof TFile)) {
+			new Notice(`The note this copy was kept for is not next to it any more.`);
+			return;
+		}
+		const copyName = copy.name;
+		const noteName = note.name;
+		// The files as compared: the app's object for each, its path, and the synced note there.
+		const objects = { copy, original: note };
+		const paths = { copy: copy.path, original: path };
+		const ids = { copy: this.session?.engine.noteAt(copy.path), original: this.session?.engine.noteAt(path) };
+		const files: ConflictFiles = {
+			same: (side) => {
+				const file = objects[side];
+				const at = paths[side];
+				return (
+					file.path === at &&
+					this.app.vault.getAbstractFileByPath(at) === file &&
+					(ids[side] === undefined || this.session?.engine.noteAt(at) === ids[side])
+				);
+			},
+			shown: (side) => this.openText(objects[side]),
+			read: (side) => this.app.vault.read(objects[side]),
+			process: async (side, update) => {
+				await this.app.vault.process(objects[side], update);
+			},
+			trash: (side) => this.app.fileManager.trashFile(objects[side]),
+		};
+		const compare = async (): Promise<Compared | null> => {
+			try {
+				return {
+					copyText: files.shown('copy') ?? (await files.read('copy')),
+					originalText: files.shown('original') ?? (await files.read('original')),
+				};
+			} catch (error) {
+				new Notice(`Stoasis could not read the two notes: ${error instanceof Error ? error.message : String(error)}`);
+				return null;
+			}
+		};
+		let compared = await compare();
+		if (compared === null) {
+			return;
+		}
+		new ConflictModal(
+			this.app,
+			copyName,
+			noteName,
+			diffLines(compared.copyText, compared.originalText),
+			async (which) => {
+				const shown = compared as Compared;
+				let result: KeepResult;
+				try {
+					result = which === 'copy' ? await useConflictCopy(files, shown) : await keepSyncedNote(files, shown);
+				} catch (error) {
+					new Notice(`Stoasis could not keep it: ${error instanceof Error ? error.message : String(error)}`);
+					return 'stay';
+				}
+				switch (result) {
+					case 'kept':
+						new Notice(
+							which === 'copy'
+								? `"${noteName}" now has the text of "${copyName}", which is in the trash.`
+								: `Kept "${noteName}" as it is; "${copyName}" is in the trash.`,
+						);
+						return 'close';
+					case 'copy-changed':
+						new Notice(
+							`"${noteName}" now has the text of "${copyName}" as compared. One of the two changed ` +
+								`or was moved meanwhile, so "${copyName}" was kept.`,
+						);
+						return 'close';
+					case 'gone':
+						new Notice(
+							`"${copyName}" or "${noteName}" was moved, deleted or replaced while this was open. ` +
+								'Nothing was changed.',
+						);
+						return 'close';
+					case 'changed': {
+						const again = await compare();
+						if (again === null) {
+							return 'close';
+						}
+						compared = again;
+						return { lines: diffLines(again.copyText, again.originalText) };
+					}
+				}
+			},
+		).open();
+	}
+
+	/** The text of `file` as an open editor shows it, saved or not, or null when it is not open. */
+	private openText(file: TFile): string | null {
+		for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+			const view = leaf.view;
+			if (view instanceof MarkdownView && view.file === file) {
+				return view.editor.getValue();
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Asks the server for properties for the note's text and shows what would
+	 * change. Any note can be tagged, synced or not, once the device is paired.
+	 */
+	async tagNote(file: TFile, editor: Pick<Editor, 'getValue'>, again = false): Promise<void> {
+		if (getPairingState(this.settings) !== 'paired') {
+			new Notice('Pair this device with a server first, in the plugin settings.');
+			return;
+		}
+		const markdown = editor.getValue();
+		if (tooLongToTag(markdown)) {
+			new Notice('This note is too long to tag.');
+			return;
+		}
+		const asking = new Notice('Asking the server for properties…', 0);
+		let suggestion;
+		try {
+			suggestion = await new NotesApi(obsidianHttp, this.settings.serverUrl, this.settings.deviceKey).suggestProperties(
+				markdown,
+			);
+		} catch (error) {
+			new Notice(
+				error instanceof ApiError && error.kind === 'network'
+					? "Couldn't reach the server."
+					: describeApiError(error),
+			);
+			return;
+		} finally {
+			asking.hide();
+		}
+		// The proposal is for the properties in the text that was sent.
+		const frontmatter = propertiesOf(markdown);
+		const reviewed = reviewedFrontmatter(frontmatter);
+		const proposal = propose(frontmatter, suggestion, stampDate(new Date()));
+		const patch = proposal.patch;
+		new TagModal(this.app, file.basename, proposal, async () => {
+			if (patch === null) {
+				return false;
+			}
+			// The open editor may have properties not saved yet, which the file does not show.
+			const result = stillReviewed(propertiesOf(editor.getValue()), reviewed)
+				? await this.applyTags(file, patch, reviewed)
+				: 'stale';
+			if (result === 'stale') {
+				// The proposal was for other properties: ask again for the note as it is now, once.
+				new Notice(
+					`The properties of "${file.basename}" changed since the suggestion, so nothing was written.` +
+						(again ? ' Run "Tag this note now" again.' : ' Asking for a new suggestion.'),
+				);
+				if (!again) {
+					void this.tagNote(file, editor, true);
+				}
+			}
+			return result !== 'failed';
+		}).open();
+	}
+
+	/**
+	 * Writes the patch into the note's frontmatter, only if it is still the
+	 * frontmatter the proposal was made for: checked inside processFrontMatter,
+	 * so nothing written meanwhile is lost.
+	 */
+	private async applyTags(
+		file: TFile,
+		patch: PropertyPatch,
+		reviewed: string,
+	): Promise<'tagged' | 'unchanged' | 'stale' | 'failed'> {
+		let changed = false;
+		try {
+			await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+				if (!stillReviewed(frontmatter, reviewed)) {
+					throw new StaleProposal();
+				}
+				changed = applyToFrontmatter(frontmatter, patch, stampDate(new Date()));
+			});
+		} catch (error) {
+			if (error instanceof StaleProposal) {
+				return 'stale';
+			}
+			new Notice(`Stoasis could not write the properties: ${error instanceof Error ? error.message : String(error)}`);
+			return 'failed';
+		}
+		new Notice(changed ? `Tagged "${file.basename}".` : 'Nothing to add: the note already has these properties.');
+		return changed ? 'tagged' : 'unchanged';
+	}
+
 	// Pairing.
 
 	private handlePairingLink(params: Record<string, string | undefined>) {
@@ -321,14 +636,15 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 				? `Paired${who}. To get your notes on this device, open the Stoasis settings and choose "Download to this device".`
 				: `Paired${who}.`,
 		);
-		this.settingTab?.display();
+		this.settingTab?.refresh();
 		this.restartSync();
 		return true;
 	}
 
 	private forgetPairing(): void {
-		const { installId, folder, pendingRevocations } = this.settings;
-		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder, pendingRevocations };
+		// Which folder warnings were shown is about this device, not the pairing.
+		const { installId, folder, pendingRevocations, folderWarnings } = this.settings;
+		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder, pendingRevocations, folderWarnings };
 		this.incompatibility = '';
 	}
 
@@ -438,6 +754,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		source.onChange(() => this.updateStatus());
 		source.start();
 		this.updateStatus();
+		void this.warnAboutFolder(settings.folder);
 		// Not awaited: the first start can wait for the server indefinitely, and
 		// stopping, disconnecting or choosing another folder must not wait for it.
 		void engine
@@ -451,6 +768,29 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			.catch((error: unknown) => {
 				new Notice(`Stoasis could not start sync: ${error instanceof Error ? error.message : String(error)}`);
 			});
+	}
+
+	/**
+	 * Warns, once for each folder, when something else also syncs or changes
+	 * the synced folder, or keeps new attachments outside it.
+	 */
+	async warnAboutFolder(folder: string): Promise<void> {
+		let check;
+		try {
+			check = await checkFolder(folderProbe(this.app), folder);
+		} catch {
+			// A warning is a nicety; sync goes on without it.
+			return;
+		}
+		const fresh = check.risks.filter((risk) => !this.settings.folderWarnings.includes(warningKey(folder, risk)));
+		if (fresh.length === 0 || this.unloaded || this.settings.folder !== folder) {
+			return;
+		}
+		for (const risk of fresh) {
+			new Notice(describeRisk(risk, folder, check.attachments), 0);
+			this.settings.folderWarnings.push(warningKey(folder, risk));
+		}
+		await this.saveSettings();
 	}
 
 	private async stopSession(): Promise<void> {
@@ -545,7 +885,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			this.settings.folder = moved;
 			this.session?.engine.folderMoved(moved);
 			this.saveSoon();
-			this.settingTab?.display();
+			this.settingTab?.refresh();
 		} else if (oldPath.startsWith(`${mapped}/`) || folder.path.startsWith(`${mapped}/`)) {
 			this.rescanSoon();
 		}
