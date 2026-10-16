@@ -508,6 +508,12 @@ export class SyncEngine {
 					released = true;
 					note.editors--;
 					if (note.editors === 0) {
+						// The app saves what the editor showed as it lets go: remember
+						// the state that holds it, so that save merges as no change.
+						const shown = captureBase(note.open.doc, NOTE_FIELD);
+						if (note.base?.text !== shown.text) {
+							note.earlier = [shown, ...note.earlier.filter((b) => b.text !== shown.text)].slice(0, EARLIER_BASES);
+						}
 						// Catch up on anything the editor did not save.
 						this.scheduleWrite(note);
 					}
@@ -630,7 +636,10 @@ export class SyncEngine {
 			note.open.doc.transact(() => setText(note.text, text), ENGINE);
 			base = captureBase(note.open.doc, NOTE_FIELD);
 		} else {
-			base = mergeOutsideEdit(note.open.doc, NOTE_FIELD, note.base, text, ENGINE);
+			// Text the note already held merges against that state, not the
+			// base: what it has since is kept, and nothing is added twice.
+			const from = (onDisk ? note.earlier.find((b) => b.text === text) : undefined) ?? note.base;
+			base = mergeOutsideEdit(note.open.doc, NOTE_FIELD, from, text, ENGINE);
 		}
 		if (onDisk) {
 			this.keepBase(note, base);

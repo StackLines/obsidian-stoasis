@@ -54,6 +54,8 @@ between a conflict copy and its note.
   while an edit from another device was still on its way to the first note's
   file, could put the first note's text into the second note, on every synced
   device. This was already the case in 0.1.1.
+- Text typed in a note just before switching to another could be added to
+  the note twice when another device edited the note at the same moment.
 - Properties your server adds to a note open in an editor no longer move the
   cursor out of the text you are typing. One case remains: text typed at the
   very start of a note while your server adds its first properties can end up
