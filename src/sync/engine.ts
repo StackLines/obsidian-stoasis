@@ -697,8 +697,24 @@ export class SyncEngine {
 		this.save();
 	}
 
-	/** Moves a file the engine tracks; the vault event for it is then ignored. */
+	/**
+	 * Moves a file the engine tracks; the vault event for it is then ignored.
+	 * A move that changes only the case of letters, such as "note.md" to
+	 * "Note.md", goes by way of another name: file systems that ignore case,
+	 * as on macOS, iOS and Windows, take the new name for the file that is
+	 * already there and refuse the move, or do nothing.
+	 */
 	private async moveFile(from: string, to: string): Promise<void> {
+		if (from !== to && from.toLowerCase() === to.toLowerCase()) {
+			const aside = sparePath(from, 'renaming', (p) => this.taken(p) || this.takenIgnoringCase(p));
+			await this.moveOnce(from, aside);
+			await this.moveOnce(aside, to);
+			return;
+		}
+		await this.moveOnce(from, to);
+	}
+
+	private async moveOnce(from: string, to: string): Promise<void> {
 		const key = `${this.path(from)}\0${this.path(to)}`;
 		this.ownMoves.add(key);
 		try {
@@ -1170,6 +1186,13 @@ export class SyncEngine {
 			}
 		}
 		return null;
+	}
+
+	/** Whether a tracked or listed note has this path in other letter case. */
+	private takenIgnoringCase(rel: string): boolean {
+		const lower = rel.toLowerCase();
+		const paths = [...Object.keys(this.state.known), ...(this.map?.keys() ?? [])];
+		return paths.some((p) => p.toLowerCase() === lower);
 	}
 
 	private taken(rel: string): boolean {

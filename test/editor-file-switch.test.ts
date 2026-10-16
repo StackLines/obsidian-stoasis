@@ -718,3 +718,96 @@ describe('keeping one side of a conflict copy while the note is open', () => {
 		paneB.close();
 	});
 });
+
+describe('a case-only rename while the note is open', () => {
+	/** Both devices ignore case, as on macOS and iOS; each has the note open. */
+	async function withPanes() {
+		const { hub, a, b } = await pair();
+		a.vault.ignoresCase = true;
+		b.vault.ignoresCase = true;
+		const paneA = new Pane(a.editors, a.vault, 'Notes/A.md');
+		const paneB = new Pane(b.editors, b.vault, 'Notes/A.md');
+		// The app's views follow a renamed file without a transaction.
+		for (const [vault, pane] of [
+			[a.vault, paneA],
+			[b.vault, paneB],
+		] as const) {
+			vault.onRename = (from, to) => {
+				if (pane.file === from) {
+					pane.point(to);
+				}
+			};
+		}
+		await settle(a, b);
+		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		return { hub, a, b, paneA, paneB, index };
+	}
+
+	const NOTE = 'Notes/A.md';
+	const CASE_ONLY = 'Notes/a.md';
+	const TYPED = ORIGINAL[NOTE]!.replace('A quiet day.', 'A quiet day. Typed before. Typed after.');
+
+	for (const [name, renamer, RENAMED] of [
+		['on the other device', 'a', CASE_ONLY],
+		['on this device', 'b', CASE_ONLY],
+		// Any rename: what was typed before it is not merged in twice.
+		['to another name on the other device', 'a', 'Notes/Renamed.md'],
+		['to another name on this device', 'b', 'Notes/Renamed.md'],
+	] as const) {
+		it(`follows a rename ${name} and keeps the typing around it`, async () => {
+			const RENAMED_REL = RENAMED.slice('Notes/'.length);
+			const { hub, a, b, paneA, paneB, index } = await withPanes();
+			const id = index()['A.md']!.id;
+			const at = paneB.text().indexOf('A quiet day.') + 'A quiet day.'.length;
+			paneB.select(at);
+			paneB.typeHere(' Typed before.');
+			(renamer === 'a' ? a : b).vault.move(NOTE, RENAMED);
+			await settle(a, b);
+			// Any update, such as a scroll, that leaves the cursor where it is.
+			paneB.dispatch({});
+			paneB.typeHere(' Typed after.');
+			await settle(a, b);
+			paneA.save();
+			paneB.save();
+			await settle(a, b);
+
+			expect(Object.keys(index()).sort()).toEqual(['B.md', 'C.md', RENAMED_REL].sort());
+			expect(index()[RENAMED_REL]!.id).toBe(id);
+			expect(hub.text(noteDocName(id))).toBe(TYPED);
+			for (const d of [a, b]) {
+				expect([...d.vault.files.keys()].filter((p) => p.startsWith('Notes/')).sort()).toEqual(
+					['Notes/B.md', 'Notes/C.md', RENAMED].sort(),
+				);
+				expect(d.vault.files.get(RENAMED)).toBe(TYPED);
+				expect(d.state.known[RENAMED_REL]).toBe(id);
+				expect(d.problems).toEqual([]);
+			}
+			expect(paneA.file).toBe(RENAMED);
+			expect(paneB.file).toBe(RENAMED);
+			expect(paneA.text()).toBe(TYPED);
+			expect(paneB.text()).toBe(TYPED);
+			expect(paneB.cursor).toBe(TYPED.indexOf(' Typed after.') + ' Typed after.'.length);
+			paneA.close();
+			paneB.close();
+		});
+	}
+
+	it('renames back, and on a device that minds case', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withPanes();
+		b.vault.ignoresCase = false;
+		const id = index()['A.md']!.id;
+		a.vault.move(NOTE, CASE_ONLY);
+		await settle(a, b);
+		b.vault.move(CASE_ONLY, NOTE);
+		await settle(a, b);
+		expect(Object.keys(index()).sort()).toEqual(['A.md', 'B.md', 'C.md']);
+		expect(index()['A.md']!.id).toBe(id);
+		expectIntact(hub, a, b);
+		expect([a.vault.files.has(CASE_ONLY), b.vault.files.has(CASE_ONLY)]).toEqual([false, false]);
+		expect([paneA.file, paneB.file]).toEqual([NOTE, NOTE]);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		paneA.close();
+		paneB.close();
+	});
+});
