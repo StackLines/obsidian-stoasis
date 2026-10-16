@@ -253,9 +253,15 @@ too.
 
 Your server may also add properties to synced notes on its own, such as the
 date a note was created. They arrive like an edit from another device; in a
-note open in an editor, the cursor stays where it is. Properties added to a
-note that had none go at its very start: text you typed at the start of that
-note at the same moment is moved to just after them, with your cursor.
+note open in an editor, the cursor usually stays where it is.
+
+One case is a known limit. Properties added to a note that had none go at
+its very start. If you type at the very start of that note at the same moment
+(or typed there while offline, before the properties reached your device),
+your text can end up in front of the properties' opening `---`. The plugin
+does not move it: every character is kept, but the properties then show as
+body text. To fix the note, cut the block from its `---` line to the closing
+`---` line and paste it at the very start, before your text.
 
 ## Brain settings
 

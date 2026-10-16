@@ -660,10 +660,15 @@ describe('a base metadata stamp arriving while the note is open', () => {
 		return d.source.open(noteDocName(index['A.md']!.id)).doc.clientID;
 	}
 
-	// Yjs orders two inserts at the same place made at the same time by client
-	// id; the server's can sort before or after the device's.
+	const BLOCK = `---\n${BASE_KEYS}---\n`;
+
+	// A known limit: Yjs orders two inserts at the same place made at the same
+	// time by client id, so text typed at the start as the server adds the
+	// first frontmatter can go before it. The plugin leaves it there rather
+	// than move anyone's text; every character is kept, the same on every
+	// device, and the cursor stays in what was typed.
 	for (const order of ['before', 'after'] as const) {
-		it(`keeps the frontmatter first when typing at the start crosses it, with the server's client id ${order}`, async () => {
+		it(`keeps text typed at the start as the stamp arrives, with the server's client id ${order}`, async () => {
 			const { hub, a, b, pane } = await opened();
 			const mine = clientOf(a, hub);
 			const server = order === 'before' ? mine - 1 : mine + 1;
@@ -672,16 +677,23 @@ describe('a base metadata stamp arriving while the note is open', () => {
 			const arrive = serverEdit(hub, 'A.md', stamp, server);
 			pane.typeHere('Typed. ');
 			arrive();
-			const added = `---\n${BASE_KEYS}---\n`.length;
-			expect(pane.text().startsWith(`---\n${BASE_KEYS}---\nTyped. `)).toBe(true);
-			expect(pane.cursor).toBe(added + 'Typed. '.length);
-			pane.typeHere('More.');
-			await expectEverywhere(pane, hub, a, b, stamp(`Typed. More.${ORIGINAL['Notes/A.md']}`));
+			const original = ORIGINAL['Notes/A.md'] as string;
+			const typedFirst = order === 'after';
+			expect(pane.text()).toBe(typedFirst ? `Typed. ${BLOCK}${original}` : `${BLOCK}Typed. ${original}`);
+			expect(pane.cursor).toBe(typedFirst ? 'Typed. '.length : `${BLOCK}Typed. `.length);
+			pane.typeHere('More. ');
+			await expectEverywhere(
+				pane,
+				hub,
+				a,
+				b,
+				typedFirst ? `Typed. More. ${BLOCK}${original}` : `${BLOCK}Typed. More. ${original}`,
+			);
 			pane.close();
 		});
 	}
 
-	it('keeps the frontmatter first when text typed at the start offline crosses it', async () => {
+	it('keeps text typed at the start offline where Yjs puts it when the stamp arrives', async () => {
 		const { hub, a, b, pane } = await opened();
 		const server = clientOf(a, hub) + 1;
 		a.source.setOnline(false);
@@ -692,42 +704,58 @@ describe('a base metadata stamp arriving while the note is open', () => {
 		expect(b.vault.files.get('Notes/A.md')).toBe(stamp(ORIGINAL['Notes/A.md'] as string));
 		a.source.setOnline(true);
 		await settle(a, b);
-		expect(pane.cursor).toBe(`---\n${BASE_KEYS}---\nOffline. `.length);
-		await expectEverywhere(pane, hub, a, b, stamp(`Offline. ${ORIGINAL['Notes/A.md']}`));
+		expect(pane.cursor).toBe('Offline. '.length);
+		await expectEverywhere(pane, hub, a, b, `Offline. ${BLOCK}${ORIGINAL['Notes/A.md']}`);
 		pane.close();
 	});
 
-	it('has each device move only what it typed, so nothing is doubled', async () => {
+	it('keeps words another device added inside text typed at the start with them', async () => {
 		const { hub, a, b, pane } = await opened();
 		const other = new Pane(b.editors, b.vault, 'Notes/A.md');
 		await settle(a, b);
-		const server = Math.max(clientOf(a, hub), clientOf(b, hub)) + 1;
-		a.source.setOnline(false);
-		b.source.setOnline(false);
+		const arrive = serverEdit(hub, 'A.md', stamp, Math.max(clientOf(a, hub), clientOf(b, hub)) + 1);
 		pane.select(0);
-		pane.typeHere('From a. ');
-		other.select(0);
-		other.typeHere('From b. ');
-		serverEdit(hub, 'A.md', stamp, server)();
-		a.source.setOnline(true);
+		pane.typeHere('Hello world. ');
 		await settle(a, b);
-		b.source.setOnline(true);
+		other.type('Hello'.length, ' brave');
 		await settle(a, b);
-		pane.save();
+		arrive();
+		await settle(a, b);
 		other.save();
-		await settle(a, b);
-		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
-		const result = hub.text(noteDocName(index['A.md']!.id));
-		expect(result.startsWith(`---\n${BASE_KEYS}---\n`)).toBe(true);
-		const body = result.slice(`---\n${BASE_KEYS}---\n`.length);
-		expect([`From a. From b. ${ORIGINAL['Notes/A.md']}`, `From b. From a. ${ORIGINAL['Notes/A.md']}`]).toContain(body);
-		for (const d of [a, b]) {
-			expect(d.vault.files.get('Notes/A.md')).toBe(result);
-		}
-		expect(pane.text()).toBe(result);
-		expect(other.text()).toBe(result);
+		const original = ORIGINAL['Notes/A.md'] as string;
+		await expectEverywhere(pane, hub, a, b, `Hello brave world. ${BLOCK}${original}`);
+		expect(other.text()).toBe(pane.text());
 		pane.close();
 		other.close();
+	});
+
+	it('keeps a deletion another device made in text typed at the start', async () => {
+		const { hub, a, b, pane } = await opened();
+		const other = new Pane(b.editors, b.vault, 'Notes/A.md');
+		await settle(a, b);
+		const arrive = serverEdit(hub, 'A.md', stamp, Math.max(clientOf(a, hub), clientOf(b, hub)) + 1);
+		pane.select(0);
+		pane.typeHere('Hello world. ');
+		await settle(a, b);
+		other.dispatch({ changes: { from: 'Hello '.length, to: 'Hello world'.length }, userEvent: 'delete' });
+		arrive();
+		await settle(a, b);
+		other.save();
+		await expectEverywhere(pane, hub, a, b, `Hello . ${BLOCK}${ORIGINAL['Notes/A.md']}`);
+		expect(other.text()).toBe(pane.text());
+		pane.close();
+		other.close();
+	});
+
+	it('leaves text typed at the start before a section between rules that arrives at the same time', async () => {
+		const { hub, a, b, pane } = await opened();
+		const section = '---\nA paragraph between rules, not metadata.\n---\n';
+		pane.select(0);
+		const arrive = serverEdit(hub, 'A.md', (text) => section + text, clientOf(a, hub) + 1);
+		pane.typeHere('Typed. ');
+		arrive();
+		await expectEverywhere(pane, hub, a, b, `Typed. ${section}${ORIGINAL['Notes/A.md']}`);
+		pane.close();
 	});
 
 	it('keeps a selection over body text selected', async () => {
