@@ -24,8 +24,9 @@ between a conflict copy and its note.
   **Scan my notes automatically**, and for the owner of the synced space its
   scan mode, base metadata, and **Add base metadata to existing notes**.
 - **Compare with the synced note**, for a conflict copy: shows the lines that
-  differ and keeps either this device's text or the server's, moving the copy
-  to the trash.
+  differ, then **Use conflict copy** or **Keep current synced note**, moving
+  the copy to the trash. Nothing is written if either file changed or was
+  replaced while the window was open.
 - A warning, once for each folder, when the vault is in iCloud Drive or
   Dropbox, Obsidian Sync is on, the folder is in a git working tree, or new
   attachments go outside the folder.

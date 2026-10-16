@@ -24,11 +24,11 @@
 	padding: var(--size-4-2);
 }
 
-.stoasis-diff-device {
+.stoasis-diff-copy {
 	background-color: rgba(var(--color-red-rgb), 0.15);
 }
 
-.stoasis-diff-server {
+.stoasis-diff-note {
 	background-color: rgba(var(--color-green-rgb), 0.15);
 }
 

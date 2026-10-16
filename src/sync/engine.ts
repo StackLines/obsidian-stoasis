@@ -399,6 +399,12 @@ export class SyncEngine {
 		return rel !== null && this.state.known[rel] !== undefined;
 	}
 
+	/** The id of the note this engine syncs at a vault path, if any. */
+	noteAt(path: string): string | undefined {
+		const rel = this.relative(path);
+		return rel === null ? undefined : this.state.known[rel];
+	}
+
 	/**
 	 * Keeps the base matching `text`, which the app loaded into an editor
 	 * showing `path`, until the returned function is called: the editor
