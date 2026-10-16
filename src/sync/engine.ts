@@ -32,6 +32,12 @@ export interface VaultAdapter {
 	rename(from: string, to: string): Promise<void>;
 	/** Moves a file to the trash, where the user can still recover it. */
 	trash(path: string): Promise<void>;
+	/**
+	 * False when the file system tells names apart by letter case alone, so
+	 * "note.md" and "Note.md" can both be there. True, or left out, when it
+	 * may not.
+	 */
+	readonly ignoresCase?: boolean;
 }
 
 /** Added to the notice for a conflict copy: how to choose between it and the note. */
@@ -187,6 +193,13 @@ export class SyncEngine {
 	private readonly loads = new Map<string, LoadPin[]>();
 	/** Moves the engine made, as "from\0to", until their vault events arrive. */
 	private readonly ownMoves = new Set<string>();
+	/**
+	 * Notes left where they are, or not created here, because their path
+	 * differs from another one here only in letter case: note id → the
+	 * problem reported for it, reported once.
+	 */
+	private readonly clashes = new Map<string, string>();
+	private readonly reportedClashes = new Set<string>();
 	private queue: Promise<void> = Promise.resolve();
 	private stopped = false;
 	private started = false;
@@ -219,7 +232,8 @@ export class SyncEngine {
 
 	/** How many notes the space lists, and how many of them are files here. */
 	progress(): { listed: number; present: number } {
-		const listed = new Set(this.entries().map(([, entry]) => entry.id));
+		// A note that cannot have a file here is not waited for.
+		const listed = new Set(this.entries().map(([, entry]) => entry.id).filter((id) => !this.clashes.has(id)));
 		let present = 0;
 		for (const id of new Set(Object.values(this.state.known))) {
 			if (listed.has(id)) {
@@ -845,6 +859,7 @@ export class SyncEngine {
 		await this.applyMoves(indexed);
 
 		const knownIds = new Set(Object.values(known));
+		let cases: CaseIndex | undefined;
 		for (const [rel, entry] of this.entries()) {
 			const id = entry.id;
 			if (known[rel] !== undefined || knownIds.has(id)) {
@@ -860,14 +875,75 @@ export class SyncEngine {
 				this.whenReady(note);
 				continue;
 			}
+			cases ??= this.caseIndex(null);
+			if (this.clashing(id, rel, null, cases)) {
+				continue;
+			}
 			if (!this.vault.exists(this.path(rel))) {
 				await this.createFile(rel, note);
 			} else {
 				await this.bindExisting(rel, note);
 			}
+			cases.add(rel);
 			knownIds.add(id);
 		}
 		this.save();
+	}
+
+	/**
+	 * Whether note `id` cannot have its file at `rel` because another file
+	 * here, or one of its folders, has the same name in other letter case: a
+	 * file system that ignores case takes the two for one. The note stays
+	 * where it is, or is not created here, and is reported once; the other
+	 * notes go on. It is kept on the server and on other devices, and arrives
+	 * once one of the two is renamed. `moving` is the note's own path here,
+	 * which does not count.
+	 */
+	private clashing(id: string, rel: string, moving: string | null, index?: CaseIndex): boolean {
+		if (this.vault.ignoresCase === false) {
+			return false;
+		}
+		const clash = (index ?? this.caseIndex(moving)).clash(rel);
+		if (clash === null) {
+			this.clashes.delete(id);
+			return false;
+		}
+		// One report for each pair of names: a folder can hold many notes.
+		const message =
+			clash.folder === null
+				? `"${rel}" was not ${moving === null ? 'downloaded' : 'moved'} to this device: "${clash.other}" is ` +
+					'already here, and the two names differ only in letter case, which the files on this device ' +
+					'cannot tell apart. Rename one of them to have both here.'
+				: `Notes in the folder "${clash.folder}" were not ${moving === null ? 'downloaded' : 'moved'} to ` +
+					`this device: the folder "${clash.other}" is already here, and the two names differ only in ` +
+					'letter case, which the files on this device cannot tell apart. Rename one of them to have both here.';
+		this.clashes.set(id, message);
+		if (!this.reportedClashes.has(message)) {
+			this.reportedClashes.add(message);
+			this.options.onProblem?.(message);
+		}
+		return true;
+	}
+
+	/**
+	 * The files here, tracked or not, and their folders, by name in lower
+	 * case, to find names that differ only in letter case. `moving` is left out.
+	 */
+	private caseIndex(moving: string | null): CaseIndex {
+		const index = new CaseIndex();
+		for (const rel of Object.keys(this.state.known)) {
+			index.add(rel);
+		}
+		for (const path of this.vault.listMarkdown(this.folder)) {
+			const rel = this.relative(path);
+			if (rel !== null) {
+				index.add(rel);
+			}
+		}
+		if (moving !== null) {
+			index.remove(moving);
+		}
+		return index;
 	}
 
 	/**
@@ -943,6 +1019,9 @@ export class SyncEngine {
 					}
 					if (known[target] !== undefined) {
 						// Another note still sits there and moves away first.
+						continue;
+					}
+					if (this.clashing(id, target, rel)) {
 						continue;
 					}
 					if (this.vault.exists(this.path(target))) {
@@ -1286,4 +1365,53 @@ function readEntry(value: unknown): IndexEntry | null {
 		return null;
 	}
 	return { id, kind };
+}
+
+/** Paths of files and folders by name in lower case, to find names that differ only in letter case. */
+class CaseIndex {
+	private readonly files = new Map<string, Set<string>>();
+	private readonly folders = new Map<string, Set<string>>();
+
+	add(rel: string): void {
+		put(this.files, rel);
+		for (const folder of folderPrefixes(rel)) {
+			put(this.folders, folder);
+		}
+	}
+
+	remove(rel: string): void {
+		this.files.get(rel.toLowerCase())?.delete(rel);
+	}
+
+	/**
+	 * A file or folder here that has the name of `rel`, or of one of its
+	 * folders, in other letter case; with `folder`, the folder of `rel` it
+	 * clashes with.
+	 */
+	clash(rel: string): { other: string; folder: string | null } | null {
+		for (const folder of folderPrefixes(rel)) {
+			const other = [...(this.folders.get(folder.toLowerCase()) ?? [])].find((f) => f !== folder);
+			if (other !== undefined) {
+				return { other, folder };
+			}
+		}
+		const other = [...(this.files.get(rel.toLowerCase()) ?? [])].find((f) => f !== rel);
+		return other === undefined ? null : { other, folder: null };
+	}
+}
+
+function put(map: Map<string, Set<string>>, path: string): void {
+	const key = path.toLowerCase();
+	let set = map.get(key);
+	if (set === undefined) {
+		set = new Set();
+		map.set(key, set);
+	}
+	set.add(path);
+}
+
+/** "a/b/c.md" → "a", "a/b". */
+function folderPrefixes(rel: string): string[] {
+	const parts = rel.split('/');
+	return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
 }

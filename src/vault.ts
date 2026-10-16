@@ -1,4 +1,4 @@
-import { TFile, TFolder, type App } from 'obsidian';
+import { Platform, TFile, TFolder, type App } from 'obsidian';
 import type { FolderProbe } from './folder-warnings';
 import type { VaultAdapter } from './sync/engine';
 import { parentFolders } from './sync/paths';
@@ -47,6 +47,9 @@ export function obsidianVault(app: App): VaultAdapter {
 			await vault.rename(file(from), to);
 		},
 		trash: (path) => fileManager.trashFile(file(path)),
+		// Desktop Linux file systems tell "note.md" from "Note.md"; those of
+		// macOS, iOS, Windows and Android storage usually do not.
+		ignoresCase: !(Platform.isDesktopApp && Platform.isLinux),
 	};
 }
 

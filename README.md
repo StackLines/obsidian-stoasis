@@ -223,6 +223,13 @@ name changes (`note.md` to `Note.md`) on a device whose file system ignores
 case, as on macOS, iOS and Windows. A note open in an editor while it is
 renamed stays open, and what you type around the rename is kept once.
 
+Two notes whose names differ only in case, such as `Ideas.md` and `ideas.md`
+made on desktop Linux, cannot both be on a device whose file system ignores
+case; nor can notes in two folders named that way. Such a device keeps the one
+it has, skips the other with a warning, and syncs every other note. The
+skipped note stays on your server and your other devices, and arrives once one
+of the two is renamed.
+
 ## Tagging
 
 Run **Tag this note now** from the command palette or the editor menu of a
