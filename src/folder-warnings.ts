@@ -1,6 +1,11 @@
-// Warnings about a synced folder that something else syncs or changes too:
+// Warnings about a synced folder that something else may sync or change too:
 // iCloud Drive, Dropbox, Obsidian Sync or git, and an attachment folder
 // outside it. Each is shown once per folder; the plugin keeps which.
+//
+// The checks are guesses from names and settings, so the warnings say "may".
+// They miss a git working tree whose .git is above the vault, which the
+// app's vault paths cannot reach, and cloud folders on a mobile app too old
+// to give full paths.
 
 /** Something that also syncs or changes the folder, or keeps its attachments elsewhere. */
 export type FolderRisk = 'icloud' | 'dropbox' | 'obsidian-sync' | 'git' | 'attachments';
@@ -13,7 +18,7 @@ export interface FolderProbe {
 	fullPath(path: string): string | null;
 	/** Whether a vault path exists, hidden ones too. */
 	exists(path: string): Promise<boolean>;
-	/** A vault file's text, or null when it cannot be read. */
+	/** A vault file's text, or null when it is not there or cannot be read. */
 	read(path: string): Promise<string | null>;
 }
 
@@ -39,11 +44,24 @@ export async function checkFolder(probe: FolderProbe, folder: string): Promise<F
 	if (await inGitTree(probe, folder)) {
 		risks.push('git');
 	}
-	const attachments = attachmentsOutside(await probe.read(`${probe.configDir}/app.json`), folder);
+	const attachments = attachmentsOutside(await appSettings(probe), folder);
 	if (attachments !== null) {
 		risks.push('attachments');
 	}
 	return { risks, attachments };
+}
+
+/**
+ * The text of `app.json`; "{}" when there is none, as in a new vault, which
+ * has the defaults; null when it is there but cannot be read.
+ */
+async function appSettings(probe: FolderProbe): Promise<string | null> {
+	const path = `${probe.configDir}/app.json`;
+	const text = await probe.read(path);
+	if (text !== null) {
+		return text;
+	}
+	return (await probe.exists(path)) ? null : '{}';
 }
 
 /** iCloud Drive on a Mac, and the Obsidian folder in iCloud on iOS. */
@@ -95,12 +113,15 @@ function pluginList(json: string | null): unknown[] {
  * Where Obsidian puts new attachments for notes in `folder`, when that is
  * outside it, from `app.json`'s "Default location for new attachments":
  * "/" is the vault root (also the default), "./" or "./sub" next to the note,
- * anything else a vault folder.
+ * anything else a vault folder. Settings that could not be read, or are not
+ * a JSON object, say nothing.
  */
 export function attachmentsOutside(json: string | null, folder: string): string | null {
 	const value = parseJson(json);
-	const setting =
-		typeof value === 'object' && value !== null ? (value as Record<string, unknown>)['attachmentFolderPath'] : undefined;
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return null;
+	}
+	const setting = (value as Record<string, unknown>)['attachmentFolderPath'];
 	const path = typeof setting === 'string' ? setting : '/';
 	if (path === '.' || path.startsWith('./')) {
 		return null;
@@ -140,23 +161,23 @@ export function describeRisk(risk: FolderRisk, folder: string, attachments: stri
 	switch (risk) {
 		case 'icloud':
 			return (
-				`"${folder}" is in iCloud Drive, which syncs it too. The two can undo each other's ` +
-				'changes or make duplicates; keep the vault out of iCloud Drive to sync it with Stoasis.'
+				`"${folder}" seems to be in iCloud Drive, which may sync it too. The two can undo each ` +
+				"other's changes or make duplicates; keep the vault out of iCloud Drive to sync it with Stoasis."
 			);
 		case 'dropbox':
 			return (
-				`"${folder}" is in Dropbox, which syncs it too. The two can undo each other's changes ` +
-				'or make duplicates; keep the vault out of Dropbox to sync it with Stoasis.'
+				`"${folder}" seems to be in Dropbox, which may sync it too. The two can undo each other's ` +
+				'changes or make duplicates; keep the vault out of Dropbox to sync it with Stoasis.'
 			);
 		case 'obsidian-sync':
 			return (
-				`Obsidian Sync is on in this vault and may sync "${folder}" too. Exclude the folder ` +
-				"in Obsidian Sync's settings so that only Stoasis syncs it."
+				`Obsidian Sync is turned on in this vault and may sync "${folder}" too. If it does, ` +
+				"exclude the folder in Obsidian Sync's settings so that only Stoasis syncs it."
 			);
 		case 'git':
 			return (
-				`"${folder}" is in a git working tree. A pull or checkout changes its notes, and Stoasis ` +
-				'syncs those changes to your other devices like any edit.'
+				`"${folder}" may be in a git working tree. A pull or checkout would change its notes, and ` +
+				'Stoasis syncs those changes to your other devices like any edit.'
 			);
 		case 'attachments':
 			return (
