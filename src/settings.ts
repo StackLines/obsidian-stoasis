@@ -1,4 +1,6 @@
 import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import type { ScanMode } from './api';
+import { Brain, describeScanModes, type BrainApi } from './brain';
 import { MAX_DEVICE_LABEL } from './pairing';
 import { explainStatus, type SyncSnapshot } from './status';
 import { emptyEngineState, parseEngineState, type EngineState } from './sync/engine';
@@ -153,12 +155,24 @@ export interface SettingsHost extends Plugin {
 	downloadFolder(): string;
 	/** Creates that folder, syncs the space with it and turns sync on. */
 	downloadToDevice(): Promise<void>;
+	/** The server's Brain calls with this device's key; null while not paired. */
+	brainApi(): BrainApi | null;
 }
+
+const SCAN_MODE_NAMES: ReadonlyArray<[ScanMode, string]> = [
+	['off', 'Off'],
+	['suggest', 'Suggest'],
+	['auto', 'Auto'],
+];
 
 export class StoasisSettingTab extends PluginSettingTab {
 	plugin: SettingsHost;
 	private draft = { server: '', code: '', label: '' };
 	private statusSetting: Setting | null = null;
+	/** What the server said for the Brain section, asked again each time the tab opens. */
+	private readonly brain = new Brain(() => this.refresh());
+	/** Whether the tab is open: the app calls `display` to open it and `hide` to close it. */
+	private open = false;
 
 	constructor(app: App, plugin: SettingsHost) {
 		super(app, plugin);
@@ -166,6 +180,7 @@ export class StoasisSettingTab extends PluginSettingTab {
 	}
 
 	display(): void {
+		this.open = true;
 		const { containerEl } = this;
 		containerEl.empty();
 		const settings = this.plugin.settings;
@@ -179,7 +194,9 @@ export class StoasisSettingTab extends PluginSettingTab {
 		if (paired) {
 			this.showPaired();
 			this.showSync();
+			this.showBrain();
 		} else {
+			this.brain.reset();
 			this.showPairing();
 		}
 
@@ -195,6 +212,20 @@ export class StoasisSettingTab extends PluginSettingTab {
 				'it can reach your notes and nothing else on the server. ' +
 				'There is no telemetry and no self-update.',
 		});
+	}
+
+	hide(): void {
+		this.open = false;
+		// Ask the server again next time, for changes made on another device.
+		this.brain.reset();
+		super.hide();
+	}
+
+	/** Draws the tab again if it is open, for when the plugin's settings changed. */
+	refresh(): void {
+		if (this.open) {
+			this.display();
+		}
 	}
 
 	/** Shows the current sync status again, for when it changed while the tab is open. */
@@ -355,6 +386,105 @@ export class StoasisSettingTab extends PluginSettingTab {
 				toggle.setValue(settings.syncEnabled).onChange(async (value) => {
 					await this.plugin.setSyncEnabled(value);
 					this.display();
+				}),
+			);
+	}
+
+	/**
+	 * The scanner's switches. The section is not shown by a server without
+	 * them, and the space's controls only to its owner.
+	 */
+	private showBrain(): void {
+		const { containerEl } = this;
+		const settings = this.plugin.settings;
+		const api = this.plugin.brainApi();
+		const server = `${settings.serverUrl}\n${settings.deviceKey}`;
+		void this.brain.load(api, server, settings.spaceId);
+		const view = this.brain.view;
+		if (api === null || view.kind === 'hidden' || view.kind === 'idle') {
+			return;
+		}
+		new Setting(containerEl).setName('Brain').setHeading();
+		if (view.kind === 'loading') {
+			containerEl.createEl('p', { cls: 'setting-item-description', text: 'Asking the server…' });
+			return;
+		}
+		if (view.kind === 'failed') {
+			new Setting(containerEl)
+				.setName('Not loaded')
+				.setDesc(view.message)
+				.addButton((button) =>
+					button.setButtonText('Try again').onClick(async () => {
+						button.setDisabled(true);
+						await this.brain.load(api, server, settings.spaceId, true);
+					}),
+				);
+			return;
+		}
+		if (view.message !== '') {
+			containerEl.createEl('p', { cls: 'stoasis-error', text: view.message });
+		}
+		const operatorOff = view.scan.operatorEnabled
+			? ''
+			: ' Scanning is turned off on this server for now, whatever this says.';
+		new Setting(containerEl)
+			.setName('Scan my notes automatically')
+			.setDesc(
+				'Let the server read the notes in your spaces and add properties to them, ' +
+					`as each space's scan mode allows.${operatorOff}`,
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(view.scan.scanEnabled).onChange(async (value) => {
+					await this.brain.setScanEnabled(api, value);
+				}),
+			);
+
+		const space = view.space;
+		if (space === null || !view.owner) {
+			return;
+		}
+		new Setting(containerEl)
+			.setName('Scan mode for your space')
+			.setDesc(describeScanModes())
+			.addDropdown((dropdown) => {
+				for (const [mode, name] of SCAN_MODE_NAMES) {
+					dropdown.addOption(mode, name);
+				}
+				dropdown.setValue(space.scanMode).onChange(async (value) => {
+					await this.brain.setScanMode(api, value as ScanMode);
+				});
+			});
+
+		if (!view.baseMetadata) {
+			return;
+		}
+		new Setting(containerEl)
+			.setName('Base metadata')
+			.setDesc(
+				'Add brain-id, brain-created and brain-schema to notes created in your space ' +
+					'from when this is turned on. Values already in a note are kept.',
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(space.baseMetadata === true).onChange(async (value) => {
+					await this.brain.setBaseMetadata(api, value);
+				}),
+			);
+		if (space.baseMetadata !== true) {
+			return;
+		}
+		if (space.baseBackfillRequested) {
+			new Setting(containerEl)
+				.setName('Existing notes')
+				.setDesc('Base metadata is being added to the notes from before, a batch at a time.');
+			return;
+		}
+		new Setting(containerEl)
+			.setName('Existing notes')
+			.setDesc('Notes from before base metadata was turned on get it only when you ask.')
+			.addButton((button) =>
+				button.setButtonText('Add base metadata to existing notes').onClick(async () => {
+					button.setDisabled(true);
+					await this.brain.requestBaseBackfill(api);
 				}),
 			);
 	}

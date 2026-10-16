@@ -11,6 +11,8 @@ import {
 	type StoasisSettings,
 } from '../src/settings';
 import type { SyncSnapshot } from '../src/status';
+import { ApiError, type ScanMode, type ScanSettings, type Space } from '../src/api';
+import type { BrainApi } from '../src/brain';
 
 describe('default settings', () => {
 	it('start in the not paired state', () => {
@@ -77,8 +79,78 @@ describe('parseSettings', () => {
 	});
 });
 
+type BrainCall = keyof BrainApi;
+
+/** The server's Brain endpoints, answering from what it holds or with the error set for a call. */
+class FakeBrainApi implements BrainApi {
+	scan: ScanSettings = { scanEnabled: false, operatorEnabled: true };
+	spaces: Space[] = [
+		{
+			id: 's1',
+			name: 'Personal',
+			kind: 'personal',
+			role: 'owner',
+			scanMode: 'off',
+			archived: false,
+			baseMetadata: true,
+			baseBackfillRequested: false,
+		},
+	];
+	fail: Partial<Record<BrainCall, ApiError>> = {};
+	calls: string[] = [];
+
+	private answer<T>(call: BrainCall, value: () => T): Promise<T> {
+		const error = this.fail[call];
+		return error === undefined ? Promise.resolve(value()) : Promise.reject(error);
+	}
+	private space(id: string): Space {
+		const space = this.spaces.find((s) => s.id === id);
+		if (space === undefined) {
+			throw new ApiError('not-found', 404);
+		}
+		return space;
+	}
+	scanSettings(): Promise<ScanSettings> {
+		this.calls.push('scan settings');
+		return this.answer('scanSettings', () => ({ ...this.scan }));
+	}
+	setScanEnabled(enabled: boolean): Promise<ScanSettings> {
+		this.calls.push(`scan ${enabled}`);
+		return this.answer('setScanEnabled', () => {
+			this.scan.scanEnabled = enabled;
+			return { ...this.scan };
+		});
+	}
+	listSpaces(): Promise<Space[]> {
+		this.calls.push('spaces');
+		return this.answer('listSpaces', () => this.spaces.map((s) => ({ ...s })));
+	}
+	setScanMode(spaceId: string, mode: ScanMode): Promise<Space> {
+		this.calls.push(`mode ${spaceId} ${mode}`);
+		return this.answer('setScanMode', () => ({ ...Object.assign(this.space(spaceId), { scanMode: mode }) }));
+	}
+	setBaseMetadata(spaceId: string, enabled: boolean): Promise<Space> {
+		this.calls.push(`base ${spaceId} ${enabled}`);
+		return this.answer('setBaseMetadata', () => ({
+			...Object.assign(this.space(spaceId), {
+				baseMetadata: enabled,
+				baseBackfillRequested: enabled && this.space(spaceId).baseBackfillRequested,
+			}),
+		}));
+	}
+	requestBaseBackfill(spaceId: string): Promise<Space | null> {
+		this.calls.push(`backfill ${spaceId}`);
+		return this.answer('requestBaseBackfill', () => {
+			Object.assign(this.space(spaceId), { baseBackfillRequested: true });
+			return null;
+		});
+	}
+}
+
 class FakeHost {
 	settings: StoasisSettings = parseSettings(null);
+	/** The server's Brain calls; null for a server without them. */
+	brain: FakeBrainApi | null = null;
 	vaultFolders = ['Journal', 'Work'];
 	calls: string[] = [];
 	pairResult = true;
@@ -132,6 +204,9 @@ class FakeHost {
 	}
 	downloadFolder(): string {
 		return this.settings.spaceName === '' ? SUGGESTED_FOLDER : `${this.settings.spaceName} 2`;
+	}
+	brainApi(): BrainApi | null {
+		return getPairingState(this.settings) === 'paired' ? this.brain : null;
 	}
 	downloadToDevice(): Promise<void> {
 		this.calls.push('download');
@@ -321,5 +396,182 @@ describe('settings tab', () => {
 		const first = items().length;
 		tab.display();
 		expect(items()).toHaveLength(first);
+	});
+});
+
+describe('settings tab: Brain', () => {
+	const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+	async function brain(prepare: (api: FakeBrainApi, host: FakeHost) => void = () => {}) {
+		const host = paired();
+		host.settings.folder = 'Notes';
+		const api = new FakeBrainApi();
+		host.brain = api;
+		prepare(api, host);
+		const view = render(host);
+		await flush();
+		const names = () => view.items().filter((i) => i.kind !== 'element').map((i) => i.name);
+		const texts = () => view.items().filter((i) => i.kind === 'element').map((i) => i.text);
+		return { ...view, host, api, names, texts };
+	}
+
+	it('asks the server, then shows the switch and the owner controls between sync and privacy', async () => {
+		const host = paired();
+		host.brain = new FakeBrainApi();
+		const { items, setting, control, button } = render(host);
+		expect(items().some((i) => i.text === 'Asking the server…')).toBe(true);
+		await flush();
+		const names = items().filter((i) => i.kind === 'heading').map((i) => i.name);
+		expect(names).toEqual(['Sync', 'Brain', 'Network and privacy']);
+		expect(control('Scan my notes automatically').value).toBe(false);
+		expect(control('Scan mode for your space').value).toBe('off');
+		expect(control('Scan mode for your space').options.map(([value]) => value)).toEqual(['off', 'suggest', 'auto']);
+		expect(setting('Scan mode for your space').desc).toContain('Suggest holds the scanner\'s changes for review');
+		expect(setting('Scan mode for your space').desc).toContain('no screen to review them yet');
+		expect(setting('Scan mode for your space').desc).toContain('Auto writes them');
+		expect(control('Base metadata').value).toBe(true);
+		expect(button('Add base metadata to existing notes')).toBeDefined();
+		expect(host.brain.calls).toEqual(['scan settings', 'spaces']);
+	});
+
+	it('is not shown by a server without scan settings, nor while not paired', async () => {
+		const { names, api } = await brain((api) => {
+			api.fail.scanSettings = new ApiError('not-found', 404);
+		});
+		expect(names()).not.toContain('Brain');
+		expect(api.calls).toEqual(['scan settings']);
+
+		const host = new FakeHost();
+		host.brain = new FakeBrainApi();
+		const view = render(host);
+		await flush();
+		expect(view.items().some((i) => i.name === 'Brain')).toBe(false);
+		expect(host.brain.calls).toEqual([]);
+	});
+
+	it('turns the person\'s switch on, and says when the server has scanning off', async () => {
+		const { control, setting, api } = await brain((api) => {
+			api.scan.operatorEnabled = false;
+		});
+		expect(setting('Scan my notes automatically').desc).toContain('turned off on this server');
+		await control('Scan my notes automatically').change(true);
+		expect(api.calls).toContain('scan true');
+		expect(control('Scan my notes automatically').value).toBe(true);
+	});
+
+	it('changes the scan mode of the synced space', async () => {
+		const { control, api } = await brain();
+		await control('Scan mode for your space').change('auto');
+		expect(api.calls).toContain('mode s1 auto');
+		expect(control('Scan mode for your space').value).toBe('auto');
+	});
+
+	it('offers a space only its owner can change to nobody else', async () => {
+		const { names } = await brain((api) => {
+			api.spaces[0]!.role = 'editor';
+		});
+		expect(names()).toContain('Scan my notes automatically');
+		expect(names()).not.toContain('Scan mode for your space');
+		expect(names()).not.toContain('Base metadata');
+	});
+
+	it('hides the owner controls when the server refuses them', async () => {
+		const { control, names, texts, api } = await brain((api) => {
+			api.fail.setScanMode = new ApiError('forbidden', 403);
+		});
+		await control('Scan mode for your space').change('suggest');
+		expect(names()).toContain('Scan my notes automatically');
+		expect(names()).not.toContain('Scan mode for your space');
+		expect(names()).not.toContain('Base metadata');
+		expect(texts()).toContain("Only the space's owner can change this.");
+		expect(api.spaces[0]?.scanMode).toBe('off');
+	});
+
+	it('leaves base metadata out for a server without it', async () => {
+		const before = await brain((api) => {
+			api.spaces[0]!.baseMetadata = null;
+		});
+		expect(before.names()).toContain('Scan mode for your space');
+		expect(before.names()).not.toContain('Base metadata');
+
+		const after = await brain((api) => {
+			api.fail.setBaseMetadata = new ApiError('not-found', 404);
+		});
+		await after.control('Base metadata').change(false);
+		expect(after.names()).toContain('Scan mode for your space');
+		expect(after.names()).not.toContain('Base metadata');
+		expect(after.names()).not.toContain('Existing notes');
+		expect(after.items().filter((i) => i.cls === 'stoasis-error')).toEqual([]);
+	});
+
+	it('offers to stamp older notes only while base metadata is on and not asked for yet', async () => {
+		const { control, button, setting, names, api } = await brain();
+		await button('Add base metadata to existing notes').click();
+		expect(api.calls).toContain('backfill s1');
+		expect(setting('Existing notes').desc).toContain('being added');
+		expect(() => button('Add base metadata to existing notes')).toThrow();
+
+		await control('Base metadata').change(false);
+		expect(api.calls).toContain('base s1 false');
+		expect(control('Base metadata').value).toBe(false);
+		expect(names()).not.toContain('Existing notes');
+
+		await control('Base metadata').change(true);
+		expect(button('Add base metadata to existing notes')).toBeDefined();
+	});
+
+	it('shows the switch as off when the server says base metadata was turned off meanwhile', async () => {
+		const { button, control, names, texts } = await brain((api) => {
+			api.fail.requestBaseBackfill = new ApiError('base-metadata-off', 409);
+		});
+		await button('Add base metadata to existing notes').click();
+		expect(texts()).toContain('Base metadata is turned off for this space.');
+		expect(control('Base metadata').value).toBe(false);
+		expect(names()).not.toContain('Existing notes');
+	});
+
+	it("says it couldn't reach the server and leaves the controls as they were", async () => {
+		const { control, texts, api } = await brain((api) => {
+			api.fail.setScanEnabled = new ApiError('network', 0);
+			api.fail.setScanMode = new ApiError('network', 0);
+		});
+		await control('Scan my notes automatically').change(true);
+		expect(texts()).toContain("Couldn't reach the server. Nothing was changed.");
+		expect(control('Scan my notes automatically').value).toBe(false);
+		await control('Scan mode for your space').change('auto');
+		expect(control('Scan mode for your space').value).toBe('off');
+		expect(control('Base metadata').value).toBe(true);
+		expect(api.scan.scanEnabled).toBe(false);
+	});
+
+	it('tries again after failing to load', async () => {
+		const { setting, button, names, api } = await brain((api) => {
+			api.fail.scanSettings = new ApiError('network', 0);
+		});
+		expect(setting('Not loaded').desc).toBe("Couldn't reach the server.");
+		delete api.fail.scanSettings;
+		await button('Try again').click();
+		await flush();
+		expect(names()).toContain('Scan my notes automatically');
+	});
+
+	it('shows only the switch until a space is known, and asks again each time the tab opens', async () => {
+		const { tab, names, api, host } = await brain((_, host) => {
+			host.settings.spaceId = '';
+		});
+		expect(names()).toContain('Scan my notes automatically');
+		expect(names()).not.toContain('Scan mode for your space');
+		expect(api.calls).toEqual(['scan settings']);
+
+		tab.display();
+		await flush();
+		expect(api.calls).toEqual(['scan settings']);
+
+		tab.hide();
+		host.settings.spaceId = 's1';
+		tab.display();
+		await flush();
+		expect(api.calls).toEqual(['scan settings', 'scan settings', 'spaces']);
+		expect(names()).toContain('Scan mode for your space');
 	});
 });
