@@ -717,6 +717,99 @@ const RELOADS: Array<[string, Reload]> = [
 	],
 ];
 
+/**
+ * The app reloads an open note's file, and the editor links again only at
+ * its next update. Edits from the other device can reach the file and the
+ * note in between, any number of them.
+ */
+describe('an editor reloaded while edits from the other device arrive', () => {
+	const remoteLines = (n: number) => Array.from({ length: n }, (_, i) => `- Remote line ${i}`).join('\n');
+	const withRemote = (n: number) => (ORIGINAL['Notes/A.md'] as string).replace('- Next day', `- Next day\n${remoteLines(n)}`);
+
+	async function reloadedThenEdited(count: number) {
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		pane.load(pane.text());
+		for (let i = 1; i <= count; i++) {
+			b.vault.write('Notes/A.md', withRemote(i));
+			await settle(a, b);
+			expect(a.vault.files.get('Notes/A.md')).toBe(withRemote(i));
+		}
+		return { hub, a, b, pane };
+	}
+
+	function expectEverywhere(hub: MemoryHub, a: Device, b: Device, pane: Pane, expected: string) {
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(pane.text()).toBe(expected);
+		expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+		expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+	}
+
+	for (const count of [1, 5, 12]) {
+		it(`keeps ${count} remote edits that arrived before the next update`, async () => {
+			const { hub, a, b, pane } = await reloadedThenEdited(count);
+			pane.select(pane.text().indexOf('A quiet') + 'A quiet'.length);
+			pane.typeHere(', calm');
+			await settle(a, b);
+			pane.save();
+			await settle(a, b);
+			expectEverywhere(hub, a, b, pane, withRemote(count).replace('A quiet day.', 'A quiet, calm day.'));
+			expect(a.problems).toEqual([]);
+			pane.close();
+		});
+	}
+
+	it('keeps them when linking again waits for the file', async () => {
+		const { hub, a, b, pane } = await reloadedThenEdited(6);
+		const read = a.vault.read.bind(a.vault);
+		let release!: () => void;
+		const pending = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		a.vault.read = async (path) => {
+			await pending;
+			return read(path);
+		};
+		pane.nudge();
+		await delay(10);
+		// One more arrives while the editor links.
+		b.vault.write('Notes/A.md', withRemote(7));
+		await delay(10);
+		release();
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expectEverywhere(hub, a, b, pane, withRemote(7));
+		expect(a.problems).toEqual([]);
+		pane.close();
+	});
+
+	it('keeps both when nothing on this device says what the editor loaded', async () => {
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		// Text that was never the file's, as far as this device knows.
+		const unknown = `${ORIGINAL['Notes/A.md']}A line from nowhere.\n`;
+		pane.load(unknown);
+		for (let i = 1; i <= 2; i++) {
+			b.vault.write('Notes/A.md', withRemote(i));
+			await settle(a, b);
+		}
+		pane.nudge();
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expectEverywhere(hub, a, b, pane, withRemote(2));
+		const copies = [...a.vault.files.keys()].filter((p) => p.includes('(conflict'));
+		expect(copies).toHaveLength(1);
+		expect(a.vault.files.get(copies[0]!)).toBe(unknown);
+		expect(a.problems).toHaveLength(1);
+		pane.close();
+	});
+});
+
 describe('tagging a note while it is open', () => {
 	for (const [name, reload] of RELOADS) {
 		it(`writes the properties once and keeps the typing: ${name}`, async () => {

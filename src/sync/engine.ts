@@ -114,6 +114,12 @@ export interface NoteLink {
 	release(): void;
 }
 
+/** A text loaded into an editor, and the base that matches it once known. */
+interface LoadPin {
+	text: string;
+	base: MergeBase | null;
+}
+
 interface IndexEntry {
 	id: string;
 	kind: string;
@@ -173,6 +179,12 @@ export class SyncEngine {
 	private index: OpenDoc | null = null;
 	private map: Y.Map<unknown> | null = null;
 	private readonly notes = new Map<string, Note>();
+	/**
+	 * Texts the app loaded into editors that have not linked again yet, by
+	 * note id, with the base each was loaded at once known. Kept until the
+	 * editor links, however many bases come after.
+	 */
+	private readonly loads = new Map<string, LoadPin[]>();
 	/** Moves the engine made, as "from\0to", until their vault events arrive. */
 	private readonly ownMoves = new Set<string>();
 	private queue: Promise<void> = Promise.resolve();
@@ -388,6 +400,33 @@ export class SyncEngine {
 	}
 
 	/**
+	 * Keeps the base matching `text`, which the app loaded into an editor
+	 * showing `path`, until the returned function is called: the editor
+	 * merges against it when it links again.
+	 */
+	pin(path: string, text: string): () => void {
+		const rel = this.relative(path);
+		const id = rel === null ? undefined : this.state.known[rel];
+		if (id === undefined) {
+			return () => undefined;
+		}
+		const note = this.notes.get(id);
+		const base = note === undefined ? null : ([note.base, ...note.earlier].find((b) => b?.text === text) ?? null);
+		const load: LoadPin = { text, base };
+		const loads = this.loads.get(id) ?? [];
+		loads.push(load);
+		this.loads.set(id, loads);
+		return () => {
+			const rest = (this.loads.get(id) ?? []).filter((l) => l !== load);
+			if (rest.length > 0) {
+				this.loads.set(id, rest);
+			} else {
+				this.loads.delete(id);
+			}
+		};
+	}
+
+	/**
 	 * Links an open editor to the note at `path`, or returns null when the
 	 * file is not synced. While linked, the editor writes the file and the
 	 * engine leaves it alone.
@@ -417,7 +456,7 @@ export class SyncEngine {
 				if (editorText === current) {
 					return;
 				}
-				const base = since ?? this.baseFor(note, loaded);
+				const base = since ?? this.baseFor(note, loaded, disk);
 				if (base === null && current !== '' && editorText !== '') {
 					// Nothing on this device says how the two relate: show the
 					// note's text, and keep the editor's as a note of its own.
@@ -567,13 +606,21 @@ export class SyncEngine {
 
 	/**
 	 * The base to merge an editor's text against: the one matching the file's
-	 * text the editor loaded, else the current one.
+	 * text the editor loaded. When none does, and the editor loaded what is on
+	 * disk now, the file changed after the current base and this device has
+	 * not merged that yet: the current base. Otherwise nothing says how the
+	 * two relate, and null keeps both.
 	 */
-	private baseFor(note: Note, loaded: string | null | undefined): MergeBase | null {
+	private baseFor(note: Note, loaded: string | null | undefined, disk: string | null): MergeBase | null {
 		if (loaded === null || loaded === undefined || note.base === null || note.base.text === loaded) {
 			return note.base;
 		}
-		return note.earlier.find((base) => base.text === loaded) ?? note.base;
+		const pinned = (this.loads.get(note.id) ?? []).map((load) => load.base);
+		const known = [...note.earlier, ...pinned].find((base) => base?.text === loaded);
+		if (known !== undefined && known !== null) {
+			return known;
+		}
+		return loaded === disk ? note.base : null;
 	}
 
 	/** The text the note would hold after merging `text` as an outside edit. */
@@ -1091,6 +1138,11 @@ export class SyncEngine {
 			note.earlier = [note.base, ...note.earlier.filter((b) => b.text !== base.text)].slice(0, EARLIER_BASES);
 		}
 		note.base = base;
+		for (const load of this.loads.get(note.id) ?? []) {
+			if (load.base === null && load.text === base.text) {
+				load.base = base;
+			}
+		}
 		void note.open.store.set(BASE_KEY, base.update);
 	}
 

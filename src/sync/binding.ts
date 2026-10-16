@@ -18,6 +18,8 @@ export interface EditorPort {
 /** Finds the shared text of a synced note, or null when the file is not synced. */
 export interface NoteLinker {
 	link(path: string): Promise<NoteLink | null>;
+	/** Keeps what the editor merges against for `text`, loaded while showing `path`, until released. */
+	pin?(path: string, text: string): () => void;
 }
 
 /** Keeps one editor and one note's shared text equal while both change. */
@@ -128,6 +130,7 @@ export class EditorSync {
 		this.linker = linker;
 		for (const handle of this.handles) {
 			handle.unbind();
+			handle.unpin();
 		}
 		this.refresh();
 	}
@@ -189,6 +192,11 @@ export class EditorSync {
 		handle.bind(linker);
 	}
 
+	/** @internal */
+	pin(path: string | null, text: string): (() => void) | null {
+		return path === null ? null : (this.linker?.pin?.(path, text) ?? null);
+	}
+
 	get size(): number {
 		return this.handles.size;
 	}
@@ -208,6 +216,8 @@ export class EditorHandle {
 	/** The text the app loaded into the editor while it showed `path`, until linked. */
 	private loadedText: string | null = null;
 	private holding = false;
+	/** Keeps the base of `loadedText` in the engine until the editor links. */
+	private release: (() => void) | null = null;
 	/**
 	 * Set when the file the editor shows was renamed while linked, until the
 	 * editor links again. Any other change of file or a load drops it.
@@ -253,6 +263,7 @@ export class EditorHandle {
 		// The text may still be the previous file's until the new one loads.
 		this.claim = this.port.text();
 		this.loadedText = null;
+		this.unpin();
 		this.owner.released(old);
 		this.owner.consider(this);
 	}
@@ -267,8 +278,10 @@ export class EditorHandle {
 	loaded(text: string): void {
 		this.renamed = null;
 		this.unbind();
+		this.unpin();
 		this.holding = true;
 		this.loadedText = text;
+		this.release = this.owner.pin(this.path, text);
 	}
 
 	/**
@@ -290,7 +303,14 @@ export class EditorHandle {
 
 	detach(): void {
 		this.unbind();
+		this.unpin();
 		this.owner.detach(this);
+	}
+
+	/** @internal */
+	unpin(): void {
+		this.release?.();
+		this.release = null;
 	}
 
 	/** @internal */
@@ -315,6 +335,7 @@ export class EditorHandle {
 					this.binding = new Binding(link, this.port, this.claim, this.loadedText, since);
 					this.claim = null;
 					this.loadedText = null;
+					this.unpin();
 				}
 			},
 			() => {
