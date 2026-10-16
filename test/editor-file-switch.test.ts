@@ -10,7 +10,8 @@ import { SyncedEditor, isLoad, type EditorViewLike } from '../src/editor';
 import { EditorSync } from '../src/sync/binding';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { SyncEngine, emptyEngineState, type EngineState } from '../src/sync/engine';
-import { replacesMost } from '../src/sync/text';
+import { replacesMost, setText } from '../src/sync/text';
+import * as Y from 'yjs';
 import { FakeVault, MemoryDocSource, MemoryHub } from './helpers/memory-source';
 import { memoryDisk, memoryStores } from './helpers/memory-store';
 import { SPACE_ID } from './helpers/control-plane';
@@ -151,6 +152,25 @@ class Pane implements EditorViewLike {
 
 	type(pos: number, insert: string): void {
 		this.dispatch({ changes: { from: pos, insert }, userEvent: 'input.type' });
+	}
+
+	/** Puts the cursor at `pos`, as a click does. */
+	select(pos: number): void {
+		this.dispatch({ selection: { anchor: pos }, userEvent: 'select.pointer' });
+	}
+
+	get cursor(): number {
+		return this.state.selection.main.head;
+	}
+
+	/** Typing at the cursor, which moves on past what was typed. */
+	typeHere(insert: string): void {
+		const at = this.cursor;
+		this.dispatch({
+			changes: { from: at, insert },
+			selection: { anchor: at + insert.length },
+			userEvent: 'input.type',
+		});
 	}
 
 	/** The app's save: the editor's text goes to the file the pane shows. */
@@ -397,5 +417,106 @@ describe('replacesMost', () => {
 		expect(replacesMost('abcdefghij', 'abcdezzzzz')).toBe(false);
 		expect(replacesMost('one\ntwo\nthree\n', 'one\ntwo\nfour\n')).toBe(false);
 		expect(replacesMost('the first line\nthe second line\n', 'Something different.\n')).toBe(true);
+	});
+});
+
+/**
+ * The server stamping base metadata into a note: it computes the new text
+ * from the shared text it holds, which may not have this device's latest
+ * typing yet, and the change then arrives through sync like any edit.
+ */
+function serverEdit(hub: MemoryHub, rel: string, edit: (text: string) => string): () => void {
+	const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+	const shared = hub.doc(noteDocName(index[rel]!.id));
+	const server = new Y.Doc();
+	Y.applyUpdate(server, Y.encodeStateAsUpdate(shared));
+	const before = Y.encodeStateVector(server);
+	const text = server.getText('content');
+	setText(text, edit(text.toJSON()));
+	const update = Y.encodeStateAsUpdate(server, before);
+	server.destroy();
+	return () => Y.applyUpdate(shared, update);
+}
+
+const BASE_KEYS = 'brain-id: 5f0c2a9e-3b1d-4c7e-8a6f-0d2b4e6c8a1f\nbrain-created: 2026-10-16\nbrain-schema: stoasis/2\n';
+const stamp = (text: string) =>
+	text.startsWith('---\n') ? text.replace(/\n---\n/, `\n${BASE_KEYS}---\n`) : `---\n${BASE_KEYS}---\n${text}`;
+
+describe('a base metadata stamp arriving while the note is open', () => {
+	async function opened(text?: string) {
+		const { hub, a, b } = await pair();
+		if (text !== undefined) {
+			a.vault.write('Notes/A.md', text);
+			await settle(a, b);
+		}
+		const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+		await settle(a, b);
+		expect(a.editors.size).toBe(1);
+		return { hub, a, b, pane };
+	}
+
+	async function expectEverywhere(pane: Pane, hub: MemoryHub, a: Device, b: Device, expected: string) {
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expect(pane.text()).toBe(expected);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+		expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+		expect(a.problems).toEqual([]);
+	}
+
+	it('keeps the cursor and the typing in the body when the note had no frontmatter', async () => {
+		const { hub, a, b, pane } = await opened();
+		const original = ORIGINAL['Notes/A.md'] as string;
+		const at = original.indexOf('A quiet day.') + 'A quiet'.length;
+		pane.select(at);
+		pane.typeHere(', calm');
+		// Computed before this device's typing reached the server.
+		const arrive = serverEdit(hub, 'A.md', stamp);
+		pane.typeHere(' and');
+		arrive();
+		const added = `---\n${BASE_KEYS}---\n`.length;
+		expect(pane.cursor).toBe(at + ', calm and'.length + added);
+		pane.typeHere(' sunny');
+		const typed = original.replace('A quiet day.', 'A quiet, calm and sunny day.');
+		await expectEverywhere(pane, hub, a, b, stamp(typed));
+		pane.close();
+	});
+
+	it('adds keys inside existing frontmatter without moving the cursor', async () => {
+		const withFrontmatter = `---\ntitle: Day 1\ntags:\n  - daily\n---\n${ORIGINAL['Notes/A.md']}`;
+		const { hub, a, b, pane } = await opened(withFrontmatter);
+		const at = withFrontmatter.indexOf('Review the inbox') + 'Review'.length;
+		pane.select(at);
+		const arrive = serverEdit(hub, 'A.md', stamp);
+		pane.typeHere(' all of');
+		arrive();
+		expect(pane.cursor).toBe(at + ' all of'.length + BASE_KEYS.length);
+		pane.typeHere(' it,');
+		const typed = withFrontmatter.replace('Review the inbox', 'Review all of it, the inbox');
+		await expectEverywhere(pane, hub, a, b, stamp(typed));
+		pane.close();
+	});
+
+	it('leaves a cursor at the very start of the note after the new frontmatter', async () => {
+		const { hub, a, b, pane } = await opened();
+		pane.select(0);
+		serverEdit(hub, 'A.md', stamp)();
+		pane.typeHere('Top. ');
+		await expectEverywhere(pane, hub, a, b, stamp(`Top. ${ORIGINAL['Notes/A.md']}`));
+		pane.close();
+	});
+
+	it('keeps a selection over body text selected', async () => {
+		const { hub, a, b, pane } = await opened();
+		const from = (ORIGINAL['Notes/A.md'] as string).indexOf('quiet');
+		pane.dispatch({ selection: { anchor: from, head: from + 'quiet'.length } });
+		serverEdit(hub, 'A.md', stamp)();
+		const range = pane.state.selection.main;
+		expect(pane.text().slice(range.from, range.to)).toBe('quiet');
+		await expectEverywhere(pane, hub, a, b, stamp(ORIGINAL['Notes/A.md'] as string));
+		pane.close();
 	});
 });
