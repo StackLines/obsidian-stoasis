@@ -400,12 +400,12 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	/**
 	 * Shows a conflict copy against its note, to keep one of the two. Both
 	 * are read as open editors show them, unsaved typing included, and
-	 * checked again when a choice is made: if either was renamed, replaced
-	 * or changed meanwhile, nothing is written.
+	 * checked again when a choice is made and as each is written or trashed:
+	 * if either was renamed, replaced or changed meanwhile, nothing is
+	 * written and the copy stays.
 	 */
 	async compareConflict(shown: TFile): Promise<void> {
 		const path = conflictOriginal(shown.path);
-		const vault = obsidianVault(this.app);
 		const copy = this.app.vault.getAbstractFileByPath(shown.path);
 		const note = path === null ? null : this.app.vault.getAbstractFileByPath(path);
 		if (!(copy instanceof TFile)) {
@@ -417,31 +417,32 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		}
 		const copyName = copy.name;
 		const noteName = note.name;
-		// The files as compared: the app's object for each, and the synced note at each path.
-		const ids = new Map([copy, note].map((file) => [file.path, this.session?.engine.noteAt(file.path)]));
-		const objects = new Map([copy, note].map((file) => [file.path, file]));
+		// The files as compared: the app's object for each, its path, and the synced note there.
+		const objects = { copy, original: note };
+		const paths = { copy: copy.path, original: path };
+		const ids = { copy: this.session?.engine.noteAt(copy.path), original: this.session?.engine.noteAt(path) };
 		const files: ConflictFiles = {
-			vault,
-			current: async (at) => {
-				const file = objects.get(at);
-				return (file === undefined ? null : this.openText(file)) ?? (await vault.read(at));
-			},
-			same: (at) => {
-				const then = ids.get(at);
-				const now = this.session?.engine.noteAt(at);
+			same: (side) => {
+				const file = objects[side];
+				const at = paths[side];
 				return (
-					this.app.vault.getAbstractFileByPath(at) === objects.get(at) &&
-					(then === undefined || now === undefined || then === now)
+					file.path === at &&
+					this.app.vault.getAbstractFileByPath(at) === file &&
+					(ids[side] === undefined || this.session?.engine.noteAt(at) === ids[side])
 				);
 			},
+			shown: (side) => this.openText(objects[side]),
+			read: (side) => this.app.vault.read(objects[side]),
+			process: async (side, update) => {
+				await this.app.vault.process(objects[side], update);
+			},
+			trash: (side) => this.app.fileManager.trashFile(objects[side]),
 		};
 		const compare = async (): Promise<Compared | null> => {
 			try {
 				return {
-					copy: copy.path,
-					original: path,
-					copyText: await files.current(copy.path),
-					originalText: await files.current(path),
+					copyText: files.shown('copy') ?? (await files.read('copy')),
+					originalText: files.shown('original') ?? (await files.read('original')),
 				};
 			} catch (error) {
 				new Notice(`Stoasis could not read the two notes: ${error instanceof Error ? error.message : String(error)}`);
@@ -476,8 +477,8 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 						return 'close';
 					case 'copy-changed':
 						new Notice(
-							`"${noteName}" now has the text of "${copyName}" as compared. "${copyName}" changed ` +
-								'meanwhile, so it was kept.',
+							`"${noteName}" now has the text of "${copyName}" as compared. One of the two changed ` +
+								`or was moved meanwhile, so "${copyName}" was kept.`,
 						);
 						return 'close';
 					case 'gone':

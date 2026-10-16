@@ -347,6 +347,10 @@ export class Vault {
 		return Promise.resolve();
 	}
 	process(file: TFile, update: (text: string) => string): Promise<string> {
+		if (!this.files.has(file.path)) {
+			// The app reads the file first, which fails once it is gone.
+			return Promise.reject(new Error(`File not found: ${file.path}`));
+		}
 		const next = update(this.files.get(file.path) ?? '');
 		this.files.set(file.path, next);
 		this.trigger('modify', file);

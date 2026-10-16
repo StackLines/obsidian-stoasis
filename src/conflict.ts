@@ -2,7 +2,6 @@
 // such as "Ideas (conflict 2026-10-15).md" next to "Ideas.md": what differs
 // between the two, and keeping one of them. src/conflict-modal.ts shows it.
 
-import type { VaultAdapter } from './sync/engine';
 import { diffSequences } from './sync/text';
 
 const CONFLICT = / \(conflict \d{4}-\d{2}-\d{2}(?: \d+)?\)\.md$/;
@@ -65,80 +64,146 @@ function same(lines: DiffLine[], run: readonly string[], first: boolean, last: b
 	}
 }
 
-/** The two files as the user compared them, and their texts then. */
+/** The two files of a conflict: the copy, and the synced note it was kept next to. */
+export type Side = 'copy' | 'original';
+
+/** The texts of the two files as the user compared them. */
 export interface Compared {
-	copy: string;
-	original: string;
 	copyText: string;
 	originalText: string;
 }
 
-/** What the keep operations read and change. */
+/**
+ * The two files as they were when compared. Each operation acts on the
+ * same file as then, wherever it is now, and never on another file put at
+ * its path.
+ */
 export interface ConflictFiles {
-	vault: VaultAdapter;
-	/** A file's text now: what an open editor shows, else what is on disk. */
-	current(path: string): Promise<string>;
-	/** Whether `path` still holds the same file, and the same synced note, as when compared. */
-	same(path: string): boolean;
+	/** Whether the file is still at its path, the same file and the same synced note as when compared. */
+	same(side: Side): boolean;
+	/** What an open editor shows of the file now, unsaved typing included, or null when none has it open. */
+	shown(side: Side): string | null;
+	/** The file's saved text. */
+	read(side: Side): Promise<string>;
+	/** Changes the file: `update` gets its saved text, and nothing else writes it until `update` returns. */
+	process(side: Side, update: (text: string) => string): Promise<void>;
+	/** Moves the file to the trash. */
+	trash(side: Side): Promise<void>;
 }
 
 /**
  * What came of keeping one side: `kept`; `changed` when either text changed
  * since the comparison, so it must be shown again; `gone` when either file
  * was moved, deleted or replaced; `copy-changed` when the note got the copy's
- * text but the copy changed meanwhile, so it was not trashed. Only `kept`
- * trashed the copy.
+ * text but then the copy changed, or either file was moved, deleted or
+ * replaced, so the copy was not trashed. Only `kept` trashed the copy.
  */
 export type KeepResult = 'kept' | 'changed' | 'gone' | 'copy-changed';
 
-/** Whether both files are still the ones compared, with the texts compared. */
+const SIDES: readonly Side[] = ['copy', 'original'];
+
+function textOf(compared: Compared, side: Side): string {
+	return side === 'copy' ? compared.copyText : compared.originalText;
+}
+
+/**
+ * Whether both files are still the ones compared, with the texts compared.
+ * Checked again after every read, as anything can happen while one is
+ * pending.
+ */
 async function unchanged(files: ConflictFiles, compared: Compared): Promise<'ok' | 'changed' | 'gone'> {
-	const { vault } = files;
-	for (const path of [compared.copy, compared.original]) {
-		if (!vault.exists(path) || !files.same(path)) {
+	const saved = new Map<Side, string>();
+	for (const side of SIDES) {
+		if (!SIDES.every((s) => files.same(s))) {
 			return 'gone';
 		}
+		saved.set(side, await files.read(side));
 	}
-	const copyText = await files.current(compared.copy);
-	const originalText = await files.current(compared.original);
-	return copyText === compared.copyText && originalText === compared.originalText ? 'ok' : 'changed';
+	if (!SIDES.every((s) => files.same(s))) {
+		return 'gone';
+	}
+	return SIDES.every((side) => (files.shown(side) ?? saved.get(side)) === textOf(compared, side)) ? 'ok' : 'changed';
+}
+
+/**
+ * Moves the copy to the trash if both files are still the ones compared and
+ * the copy still has the text compared, saved first when an editor shows it
+ * unsaved, so that the trash holds it. Nothing is awaited between the last
+ * check and the move, so typing or sync since then cannot be lost with it.
+ */
+async function trashCopy(files: ConflictFiles, compared: Compared): Promise<'ok' | 'changed' | 'gone'> {
+	const { copyText } = compared;
+	for (let saved = false; ; ) {
+		if (!SIDES.every((s) => files.same(s))) {
+			return 'gone';
+		}
+		const disk = await files.read('copy');
+		if (!SIDES.every((s) => files.same(s))) {
+			return 'gone';
+		}
+		const shown = files.shown('copy');
+		if ((shown ?? disk) !== copyText) {
+			return 'changed';
+		}
+		if (disk === copyText) {
+			await files.trash('copy');
+			return 'ok';
+		}
+		if (saved) {
+			return 'changed';
+		}
+		saved = true;
+		let wrote = false;
+		await files.process('copy', (text) => {
+			if (text !== disk || !files.same('copy') || files.shown('copy') !== copyText) {
+				return text;
+			}
+			wrote = true;
+			return copyText;
+		});
+		if (!wrote) {
+			return 'changed';
+		}
+	}
 }
 
 /**
  * Puts the copy's text, as compared, into the note, then moves the copy to
  * the trash once the note has it and the copy has not changed since. Sync
  * takes the note's new text as an edit made on this device.
+ *
+ * The note is written only if, as it is written, it is the file compared
+ * and holds the text compared, saved and in any open editor. While an
+ * editor has typing in it not saved yet, that cannot be told, so nothing is
+ * written and the two are shown again.
  */
 export async function useConflictCopy(files: ConflictFiles, compared: Compared): Promise<KeepResult> {
-	const { vault } = files;
 	const check = await unchanged(files, compared);
 	if (check !== 'ok') {
 		return check;
 	}
-	const disk = await vault.read(compared.original);
-	let raced = false;
-	await vault.process(compared.original, (text) => {
-		if (text !== disk) {
-			// Written meanwhile: leave it.
-			raced = true;
+	let result = null as KeepResult | null;
+	await files.process('original', (text) => {
+		if (!SIDES.every((s) => files.same(s))) {
+			result = 'gone';
+			return text;
+		}
+		const copy = files.shown('copy');
+		if (
+			text !== compared.originalText ||
+			(files.shown('original') ?? text) !== compared.originalText ||
+			(copy !== null && copy !== compared.copyText)
+		) {
+			// Written or typed in meanwhile: leave it.
+			result = 'changed';
 			return text;
 		}
 		return compared.copyText;
 	});
-	if (raced) {
-		return 'changed';
+	if (result !== null) {
+		return result;
 	}
-	if (!vault.exists(compared.copy) || !files.same(compared.copy)) {
-		return 'gone';
-	}
-	if ((await files.current(compared.copy)) !== compared.copyText) {
-		return 'copy-changed';
-	}
-	if ((await vault.read(compared.original)) !== compared.copyText) {
-		return 'changed';
-	}
-	await vault.trash(compared.copy);
-	return 'kept';
+	return (await trashCopy(files, compared)) === 'ok' ? 'kept' : 'copy-changed';
 }
 
 /** Moves the copy to the trash, leaving the note as it is, if neither changed since the comparison. */
@@ -147,6 +212,6 @@ export async function keepSyncedNote(files: ConflictFiles, compared: Compared): 
 	if (check !== 'ok') {
 		return check;
 	}
-	await files.vault.trash(compared.copy);
-	return 'kept';
+	const trashed = await trashCopy(files, compared);
+	return trashed === 'ok' ? 'kept' : trashed;
 }

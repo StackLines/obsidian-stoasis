@@ -1062,17 +1062,18 @@ describe('keeping one side of a conflict copy while the note is open', () => {
 	 * open pane shows it, else as on disk, and the synced note at each path.
 	 */
 	async function compare(d: Device, ...panes: Pane[]): Promise<{ files: ConflictFiles; compared: Compared }> {
-		const ids = new Map([COPY, 'Notes/A.md'].map((path) => [path, d.engine.noteAt(path)]));
+		const paths = { copy: COPY, original: 'Notes/A.md' };
+		const ids = { copy: d.engine.noteAt(COPY), original: d.engine.noteAt('Notes/A.md') };
 		const files: ConflictFiles = {
-			vault: d.vault,
-			current: async (path) => panes.find((pane) => pane.file === path)?.text() ?? (await d.vault.read(path)),
-			same: (path) => d.engine.noteAt(path) === ids.get(path),
+			same: (side) => d.vault.exists(paths[side]) && d.engine.noteAt(paths[side]) === ids[side],
+			shown: (side) => panes.find((pane) => pane.file === paths[side])?.text() ?? null,
+			read: (side) => d.vault.read(paths[side]),
+			process: (side, update) => d.vault.process(paths[side], update),
+			trash: (side) => d.vault.trash(paths[side]),
 		};
 		const compared: Compared = {
-			copy: COPY,
-			original: 'Notes/A.md',
-			copyText: await files.current(COPY),
-			originalText: await files.current('Notes/A.md'),
+			copyText: files.shown('copy') ?? (await files.read('copy')),
+			originalText: files.shown('original') ?? (await files.read('original')),
 		};
 		return { files, compared };
 	}
@@ -1152,6 +1153,51 @@ describe('keeping one side of a conflict copy while the note is open', () => {
 		paneA.close();
 		paneB.close();
 	});
+
+	for (const choice of ['use conflict copy', 'keep current synced note'] as const) {
+		it(`${choice}, typed in the open copy as it is about to go: the copy and the typing stay`, async () => {
+			const { hub, a, b, paneA, paneB, index } = await withCopy();
+			const copyPane = new Pane(a.editors, a.vault, COPY);
+			await settle(a, b);
+			const { files, compared } = await compare(a, paneA, copyPane);
+			// The last read of the copy before the trash: the person types meanwhile.
+			const read = files.read.bind(files);
+			files.read = async (side) => {
+				const text = await read(side);
+				if (side === 'copy' && (choice === 'keep current synced note' || a.vault.files.get('Notes/A.md') === COPY_TEXT)) {
+					files.read = read;
+					copyPane.type(copyPane.text().indexOf('A quiet day'), 'Late: ');
+				}
+				return text;
+			};
+			const kept = choice === 'use conflict copy' ? await useConflictCopy(files, compared) : await keepSyncedNote(files, compared);
+			const typed = copyPane.text();
+			expect(typed).toContain('Late: A quiet day');
+			if (choice === 'use conflict copy') {
+				expect(kept).toBe('copy-changed');
+				paneA.load(COPY_TEXT);
+			} else {
+				expect(kept).toBe('changed');
+			}
+			copyPane.save();
+			await settle(a, b);
+			paneB.save();
+			await settle(a, b);
+
+			const note = choice === 'use conflict copy' ? COPY_TEXT : ORIGINAL['Notes/A.md'];
+			expect(a.vault.trashed).toEqual([]);
+			for (const d of [a, b]) {
+				expect(d.vault.files.get(COPY)).toBe(typed);
+				expect(d.vault.files.get('Notes/A.md')).toBe(note);
+				expect(d.problems).toEqual([]);
+			}
+			expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(note);
+			expect(paneB.text()).toBe(note);
+			copyPane.close();
+			paneA.close();
+			paneB.close();
+		});
+	}
 
 	it('use conflict copy, while the other device edits the copy: the edit is kept in the copy', async () => {
 		const { hub, a, b, paneA, paneB, index } = await withCopy();

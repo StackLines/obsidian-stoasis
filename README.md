@@ -199,9 +199,12 @@ palette or the editor menu. It shows the lines that differ, as open editors
 show them, unsaved typing included. **Use conflict copy** puts the copy's text
 into the note, which syncs like any edit; **Keep current synced note** leaves
 the note as it is. Either way the copy goes to the trash, where you can still
-recover it. If either file was renamed, deleted or replaced while the window
-was open, nothing is changed; if either text changed, the window shows the
-differences again. A copy that changed while the note got its text is kept.
+recover it, with any typing in it saved first. If either file was renamed,
+deleted or replaced while the window was open, nothing is changed; if either
+text changed, the window shows the differences again. While the note has
+typing in it that is not saved yet, **Use conflict copy** shows them again
+too; choose once more after the note is saved. The copy is kept if it changes,
+or either file goes, at any point before it would go to the trash.
 
 ### Folder warnings
 

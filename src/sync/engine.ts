@@ -583,7 +583,16 @@ export class SyncEngine {
 			return;
 		}
 		const note = await this.note(id);
-		const text = await this.vault.read(path);
+		let text: string;
+		try {
+			text = await this.vault.read(path);
+		} catch (error) {
+			if (!this.vault.exists(path)) {
+				// Deleted right after it was saved: the delete is handled next.
+				return;
+			}
+			throw error;
+		}
 		if (text === note.text.toJSON()) {
 			if (note.base?.text !== text) {
 				this.setBase(note);

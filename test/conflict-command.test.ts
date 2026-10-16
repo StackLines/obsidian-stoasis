@@ -154,7 +154,7 @@ describe('comparing a conflict copy with its note', () => {
 		expect(app.vault.files.get(COPY)).toBe('# Ideas\n\nFrom this device, saved meanwhile.\n');
 		expect(notices).toEqual([
 			'"Ideas.md" now has the text of "Ideas (conflict 2026-10-15).md" as compared. ' +
-				'"Ideas (conflict 2026-10-15).md" changed meanwhile, so it was kept.',
+				'One of the two changed or was moved meanwhile, so "Ideas (conflict 2026-10-15).md" was kept.',
 		]);
 	});
 
@@ -184,6 +184,187 @@ describe('comparing a conflict copy with its note', () => {
 		expect(modal().isOpen).toBe(false);
 		await run(COPY);
 		expect(openedModals).toHaveLength(1);
+	});
+
+	it('writes nothing over the synced note when it is saved while being checked', async () => {
+		const { app, run, modal } = await setUp();
+		await run(COPY);
+		const read = app.vault.read.bind(app.vault);
+		app.vault.read = async (file) => {
+			if (file.path === NOTE) {
+				app.vault.read = read;
+				app.vault.files.set(NOTE, 'New text after the check.\n');
+			}
+			return read(file);
+		};
+		await modal().choose('copy');
+		expect(app.vault.files.get(NOTE)).toBe('New text after the check.\n');
+		expect(app.vault.files.get(COPY)).toBe('# Ideas\n\nFrom this device.\n');
+		expect(modal().isOpen).toBe(true);
+		expect(diffOf(modal())).toContain('+ New text after the check.');
+	});
+
+	it('writes nothing over another note put where the synced note was while it is being checked', async () => {
+		const { app, run, modal } = await setUp();
+		await run(COPY);
+		const read = app.vault.read.bind(app.vault);
+		app.vault.read = async (file) => {
+			if (file.path === NOTE) {
+				app.vault.read = read;
+				await app.vault.rename(file, 'Notes/Renamed.md');
+				await app.vault.create(NOTE, '# Ideas\n\nFrom the server.\n');
+			}
+			return read(file);
+		};
+		await modal().choose('copy');
+		expect(app.vault.files.get(NOTE)).toBe('# Ideas\n\nFrom the server.\n');
+		expect(app.vault.files.get('Notes/Renamed.md')).toBe('# Ideas\n\nFrom the server.\n');
+		expect(app.vault.files.get(COPY)).toBe('# Ideas\n\nFrom this device.\n');
+	});
+
+	it('keeps the open copy when it is typed in after the synced note got its text', async () => {
+		const { app, run, modal } = await setUp();
+		const open = new MarkdownView(app.vault.fileAt(COPY), '# Ideas\n\nFrom this device.\n');
+		app.workspace.leaves.push({ view: open });
+		await run(COPY);
+		const read = app.vault.read.bind(app.vault);
+		app.vault.read = async (file) => {
+			if (file.path === COPY && app.vault.files.get(NOTE) === '# Ideas\n\nFrom this device.\n') {
+				app.vault.read = read;
+				open.editor.setValue('# Ideas\n\nFrom this device.\n\nNewest, not saved.\n');
+			}
+			return read(file);
+		};
+		await modal().choose('copy');
+		expect(app.vault.files.get(NOTE)).toBe('# Ideas\n\nFrom this device.\n');
+		expect(app.vault.files.get(COPY)).toBe('# Ideas\n\nFrom this device.\n');
+		expect(open.editor.getValue()).toBe('# Ideas\n\nFrom this device.\n\nNewest, not saved.\n');
+		expect(notices).toEqual([
+			'"Ideas.md" now has the text of "Ideas (conflict 2026-10-15).md" as compared. ' +
+				'One of the two changed or was moved meanwhile, so "Ideas (conflict 2026-10-15).md" was kept.',
+		]);
+	});
+
+	it('keeps the copy when the synced note is deleted while it is being checked', async () => {
+		const { app, run, modal } = await setUp();
+		await run(COPY);
+		const read = app.vault.read.bind(app.vault);
+		app.vault.read = async (file) => {
+			const text = await read(file);
+			if (file.path === NOTE) {
+				app.vault.read = read;
+				await app.vault.delete(file);
+			}
+			return text;
+		};
+		await modal().choose('note');
+		expect(app.vault.files.has(NOTE)).toBe(false);
+		expect(app.vault.files.get(COPY)).toBe('# Ideas\n\nFrom this device.\n');
+		expect(notices[0]).toContain('was moved, deleted or replaced while this was open');
+	});
+
+	it('saves typing in the open copy before it goes to the trash', async () => {
+		const { app, run, modal } = await setUp();
+		const open = new MarkdownView(app.vault.fileAt(COPY), '# Ideas\n\nFrom this device, typed.\n');
+		app.workspace.leaves.push({ view: open });
+		await run(COPY);
+		const trashed: string[] = [];
+		const trashFile = app.fileManager.trashFile.bind(app.fileManager);
+		app.fileManager.trashFile = async (file) => {
+			trashed.push(app.vault.files.get(file.path) ?? '');
+			await trashFile(file);
+		};
+		await modal().choose('note');
+		expect(trashed).toEqual(['# Ideas\n\nFrom this device, typed.\n']);
+		expect(app.vault.files.get(NOTE)).toBe('# Ideas\n\nFrom the server.\n');
+	});
+
+	it('writes nothing while the synced note has typing not saved yet, and shows the two again', async () => {
+		const { app, run, modal } = await setUp();
+		const open = new MarkdownView(app.vault.fileAt(NOTE), '# Ideas\n\nFrom the server, typed.\n');
+		app.workspace.leaves.push({ view: open });
+		await run(COPY);
+		await modal().choose('copy');
+		expect(app.vault.files.get(NOTE)).toBe('# Ideas\n\nFrom the server.\n');
+		expect(app.vault.files.get(COPY)).toBe('# Ideas\n\nFrom this device.\n');
+		expect(modal().isOpen).toBe(true);
+		// Once saved, the choice goes through.
+		app.vault.files.set(NOTE, open.editor.getValue());
+		await modal().choose('copy');
+		expect(app.vault.files.get(NOTE)).toBe('# Ideas\n\nFrom this device.\n');
+		expect(app.vault.files.has(COPY)).toBe(false);
+	});
+
+	describe('whenever something else happens while a choice is carried out', () => {
+		const RACES: Array<[string, (app: App, open: MarkdownView) => Promise<void>, (app: App, open: MarkdownView) => void]> = [
+			[
+				'the synced note is saved with new text',
+				async (app) => void app.vault.files.set(NOTE, 'Saved meanwhile.\n'),
+				(app) => expect(app.vault.files.get(NOTE)).toBe('Saved meanwhile.\n'),
+			],
+			[
+				'the open copy is typed in',
+				async (_app, open) => open.editor.setValue('Typed meanwhile.\n'),
+				(app, open) => {
+					expect(app.vault.files.has(COPY)).toBe(true);
+					expect(open.editor.getValue()).toBe('Typed meanwhile.\n');
+				},
+			],
+			[
+				'the synced note is deleted',
+				async (app) => app.vault.delete(app.vault.fileAt(NOTE)),
+				(app) => expect(app.vault.files.get(COPY)).toBe('# Ideas\n\nFrom this device.\n'),
+			],
+			[
+				'another note is put where the synced note was',
+				async (app) => {
+					await app.vault.rename(app.vault.fileAt(NOTE), 'Notes/Renamed.md');
+					await app.vault.create(NOTE, '# Ideas\n\nFrom the server.\n');
+				},
+				(app) => {
+					expect(app.vault.files.get(NOTE)).toBe('# Ideas\n\nFrom the server.\n');
+					expect(app.vault.files.get(COPY)).toBe('# Ideas\n\nFrom this device.\n');
+				},
+			],
+		];
+		for (const [name, race, check] of RACES) {
+			for (const which of ['copy', 'note'] as const) {
+				it(`${name}: ${which === 'copy' ? 'use conflict copy' : 'keep current synced note'}`, async () => {
+					let steps = 0;
+					for (let n = 1; ; n++) {
+						notices.length = 0;
+						const { app, run, modal } = await setUp();
+						const open = new MarkdownView(app.vault.fileAt(COPY), '# Ideas\n\nFrom this device.\n');
+						app.workspace.leaves.push({ view: open });
+						await run(COPY);
+						let step = 0;
+						const hook = async () => {
+							if (++step === n) {
+								await race(app, open);
+							}
+						};
+						const read = app.vault.read.bind(app.vault);
+						const process = app.vault.process.bind(app.vault);
+						app.vault.read = async (file) => {
+							const text = await read(file);
+							await hook();
+							return text;
+						};
+						app.vault.process = async (file, update) => {
+							await hook();
+							return process(file, update);
+						};
+						await modal().choose(which);
+						if (step < n) {
+							break;
+						}
+						check(app, open);
+						steps = n;
+					}
+					expect(steps).toBeGreaterThan(1);
+				});
+			}
+		}
 	});
 
 	it('is in the editor menu of a conflict copy', async () => {

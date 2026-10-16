@@ -27,7 +27,8 @@ between a conflict copy and its note.
 - **Compare with the synced note**, for a conflict copy: shows the lines that
   differ, then **Use conflict copy** or **Keep current synced note**, moving
   the copy to the trash. Nothing is written if either file changed or was
-  replaced while the window was open.
+  replaced while the window was open, and the copy is kept if it changes, or
+  either file goes, before it would go to the trash.
 - A warning, once for each folder, when the vault seems to be in iCloud Drive
   or Dropbox, Obsidian Sync is turned on, the folder may be in a git working
   tree, or new attachments go outside the folder.
