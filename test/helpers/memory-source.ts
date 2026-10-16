@@ -63,8 +63,6 @@ class MemoryOpenDoc implements OpenDoc {
 		const remote = this.hub.doc(this.name);
 		const fromHub = Symbol('hub');
 		const toHub = Symbol('device');
-		Y.applyUpdate(remote, Y.encodeStateAsUpdate(this.doc, Y.encodeStateVector(remote)), toHub);
-		Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(remote, Y.encodeStateVector(this.doc)), fromHub);
 		const up = (update: Uint8Array, origin: unknown) => {
 			if (origin !== fromHub) {
 				Y.applyUpdate(remote, update, toHub);
@@ -77,8 +75,12 @@ class MemoryOpenDoc implements OpenDoc {
 				Y.applyUpdate(this.doc, update, fromHub);
 			}
 		};
+		// Listening before the first exchange, as a provider does: a change
+		// made while it is applied is sent too.
 		this.doc.on('update', up);
 		remote.on('update', down);
+		Y.applyUpdate(remote, Y.encodeStateAsUpdate(this.doc, Y.encodeStateVector(remote)), toHub);
+		Y.applyUpdate(this.doc, Y.encodeStateAsUpdate(remote, Y.encodeStateVector(this.doc)), fromHub);
 		this.unlink = () => {
 			this.doc.off('update', up);
 			remote.off('update', down);

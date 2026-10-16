@@ -51,6 +51,9 @@ between a conflict copy and its note.
   arriving could undo those edits.
 - Properties your server adds to a note open in an editor no longer move the
   cursor out of the text you are typing.
+- Text typed at the start of a note at the moment your server added its first
+  properties could end up in front of them, which made the properties part of
+  the text. That text now goes after them.
 
 ## [0.1.1] - 2026-10-15
 
