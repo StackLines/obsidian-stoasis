@@ -220,7 +220,10 @@ export class EditorHandle {
 	private release: (() => void) | null = null;
 	/**
 	 * Set when the file the editor shows was renamed while linked, until the
-	 * editor links again. Any other change of file or a load drops it.
+	 * editor links to a note again. A rename can pass through a name the
+	 * engine does not track yet, as a case-only rename does: the snapshot
+	 * holds across it, and what is typed meanwhile is merged against it once
+	 * linked. Any other change of file or a load drops it.
 	 */
 	private renamed: Snapshot | null = null;
 
@@ -248,15 +251,15 @@ export class EditorHandle {
 
 	/**
 	 * The editor now shows another file, or with `renamed` the same file under
-	 * a new name. Only a rename keeps what the editor was linked to; still
-	 * linking after an earlier rename, that snapshot still holds.
+	 * a new name. Only a rename keeps what the editor was linked to; not
+	 * linked again since an earlier rename, that snapshot still holds.
 	 */
 	setPath(path: string | null, renamed = false): void {
 		if (path === this.path) {
 			return;
 		}
 		const old = this.path;
-		this.renamed = !renamed ? null : this.binding !== null ? this.binding.snapshot() : this.linking ? this.renamed : null;
+		this.renamed = !renamed ? null : this.binding !== null ? this.binding.snapshot() : this.renamed;
 		this.unbind();
 		this.holding = false;
 		this.path = path;
@@ -328,9 +331,9 @@ export class EditorHandle {
 					return;
 				}
 				this.linking = false;
-				const renamed = this.renamed;
-				this.renamed = null;
 				if (link !== null) {
+					const renamed = this.renamed;
+					this.renamed = null;
 					const since = renamed !== null && renamed.id === link.id ? renamed.base : null;
 					this.binding = new Binding(link, this.port, this.claim, this.loadedText, since);
 					this.claim = null;
