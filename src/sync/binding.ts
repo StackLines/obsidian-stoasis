@@ -335,7 +335,14 @@ export class EditorHandle {
 					const renamed = this.renamed;
 					this.renamed = null;
 					const since = renamed !== null && renamed.id === link.id ? renamed.base : null;
-					this.binding = new Binding(link, this.port, this.claim, this.loadedText, since);
+					const binding = new Binding(link, this.port, this.claim, this.loadedText, since);
+					if (attempt !== this.attempt) {
+						// Showing the note's text updated the editor, which by then
+						// showed another file: that switch already started over.
+						binding.release();
+						return;
+					}
+					this.binding = binding;
 					this.claim = null;
 					this.loadedText = null;
 					this.unpin();
