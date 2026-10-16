@@ -1,6 +1,8 @@
 import {
 	Annotation,
+	EditorSelection,
 	Transaction,
+	type ChangeSet,
 	type EditorState,
 	type Extension,
 	type TransactionSpec,
@@ -99,15 +101,35 @@ export class SyncedEditor {
 		if (edits.length === 0) {
 			return;
 		}
-		this.view.dispatch({
-			changes: edits.map((edit) => ({
+		const state = this.view.state;
+		const changes = state.changes(
+			edits.map((edit) => ({
 				from: edit.pos,
 				to: edit.pos + edit.del,
 				insert: edit.ins,
 			})),
+		);
+		const spec: TransactionSpec = {
+			changes,
 			annotations: [fromSync.of(true), Transaction.addToHistory.of(false)],
-		});
+		};
+		// Text inserted at the very start goes before a cursor there: that is
+		// where the server adds frontmatter to a note that had none, and the
+		// next keystroke belongs in the body, not in front of the `---`.
+		if (edits.some((edit) => edit.pos === 0 && edit.ins !== '')) {
+			spec.selection = keepAfterStart(state.selection, changes);
+		}
+		this.view.dispatch(spec);
 	}
+}
+
+/** Maps a selection through changes, moving ends at the start past text inserted there. */
+function keepAfterStart(selection: EditorSelection, changes: ChangeSet): EditorSelection {
+	const map = (pos: number) => changes.mapPos(pos, pos === 0 ? 1 : -1);
+	return EditorSelection.create(
+		selection.ranges.map((range) => EditorSelection.range(map(range.anchor), map(range.head))),
+		selection.mainIndex,
+	);
 }
 
 /**
