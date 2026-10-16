@@ -252,7 +252,9 @@ too.
 
 Your server may also add properties to synced notes on its own, such as the
 date a note was created. They arrive like an edit from another device; in a
-note open in an editor, the cursor stays where it is.
+note open in an editor, the cursor stays where it is. Properties added to a
+note that had none go at its very start: text you typed at the start of that
+note at the same moment is moved to just after them, with your cursor.
 
 ## Brain settings
 

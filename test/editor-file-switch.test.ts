@@ -31,6 +31,7 @@ afterEach(async () => {
 
 interface Device {
 	engine: SyncEngine;
+	source: MemoryDocSource;
 	vault: FakeVault;
 	state: EngineState;
 	editors: EditorSync;
@@ -64,7 +65,7 @@ async function device(hub: MemoryHub): Promise<Device> {
 		await engine.stop();
 		await source.destroy();
 	});
-	return { engine, vault, state, editors, problems };
+	return { engine, source, vault, state, editors, problems };
 }
 
 async function settle(...devices: Device[]): Promise<void> {
@@ -566,10 +567,13 @@ describe('replacesMost', () => {
  * from the shared text it holds, which may not have this device's latest
  * typing yet, and the change then arrives through sync like any edit.
  */
-function serverEdit(hub: MemoryHub, rel: string, edit: (text: string) => string): () => void {
+function serverEdit(hub: MemoryHub, rel: string, edit: (text: string) => string, clientID?: number): () => void {
 	const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
 	const shared = hub.doc(noteDocName(index[rel]!.id));
 	const server = new Y.Doc();
+	if (clientID !== undefined) {
+		server.clientID = clientID;
+	}
 	Y.applyUpdate(server, Y.encodeStateAsUpdate(shared));
 	const before = Y.encodeStateVector(server);
 	const text = server.getText('content');
@@ -648,6 +652,82 @@ describe('a base metadata stamp arriving while the note is open', () => {
 		pane.typeHere('Top. ');
 		await expectEverywhere(pane, hub, a, b, stamp(`Top. ${ORIGINAL['Notes/A.md']}`));
 		pane.close();
+	});
+
+	/** The client id of a device's copy of note A, which orders its inserts against the server's. */
+	function clientOf(d: Device, hub: MemoryHub): number {
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		return d.source.open(noteDocName(index['A.md']!.id)).doc.clientID;
+	}
+
+	// Yjs orders two inserts at the same place made at the same time by client
+	// id; the server's can sort before or after the device's.
+	for (const order of ['before', 'after'] as const) {
+		it(`keeps the frontmatter first when typing at the start crosses it, with the server's client id ${order}`, async () => {
+			const { hub, a, b, pane } = await opened();
+			const mine = clientOf(a, hub);
+			const server = order === 'before' ? mine - 1 : mine + 1;
+			pane.select(0);
+			// Computed before this device's typing reached the server.
+			const arrive = serverEdit(hub, 'A.md', stamp, server);
+			pane.typeHere('Typed. ');
+			arrive();
+			const added = `---\n${BASE_KEYS}---\n`.length;
+			expect(pane.text().startsWith(`---\n${BASE_KEYS}---\nTyped. `)).toBe(true);
+			expect(pane.cursor).toBe(added + 'Typed. '.length);
+			pane.typeHere('More.');
+			await expectEverywhere(pane, hub, a, b, stamp(`Typed. More.${ORIGINAL['Notes/A.md']}`));
+			pane.close();
+		});
+	}
+
+	it('keeps the frontmatter first when text typed at the start offline crosses it', async () => {
+		const { hub, a, b, pane } = await opened();
+		const server = clientOf(a, hub) + 1;
+		a.source.setOnline(false);
+		pane.select(0);
+		pane.typeHere('Offline. ');
+		serverEdit(hub, 'A.md', stamp, server)();
+		await settle(a, b);
+		expect(b.vault.files.get('Notes/A.md')).toBe(stamp(ORIGINAL['Notes/A.md'] as string));
+		a.source.setOnline(true);
+		await settle(a, b);
+		expect(pane.cursor).toBe(`---\n${BASE_KEYS}---\nOffline. `.length);
+		await expectEverywhere(pane, hub, a, b, stamp(`Offline. ${ORIGINAL['Notes/A.md']}`));
+		pane.close();
+	});
+
+	it('has each device move only what it typed, so nothing is doubled', async () => {
+		const { hub, a, b, pane } = await opened();
+		const other = new Pane(b.editors, b.vault, 'Notes/A.md');
+		await settle(a, b);
+		const server = Math.max(clientOf(a, hub), clientOf(b, hub)) + 1;
+		a.source.setOnline(false);
+		b.source.setOnline(false);
+		pane.select(0);
+		pane.typeHere('From a. ');
+		other.select(0);
+		other.typeHere('From b. ');
+		serverEdit(hub, 'A.md', stamp, server)();
+		a.source.setOnline(true);
+		await settle(a, b);
+		b.source.setOnline(true);
+		await settle(a, b);
+		pane.save();
+		other.save();
+		await settle(a, b);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		const result = hub.text(noteDocName(index['A.md']!.id));
+		expect(result.startsWith(`---\n${BASE_KEYS}---\n`)).toBe(true);
+		const body = result.slice(`---\n${BASE_KEYS}---\n`.length);
+		expect([`From a. From b. ${ORIGINAL['Notes/A.md']}`, `From b. From a. ${ORIGINAL['Notes/A.md']}`]).toContain(body);
+		for (const d of [a, b]) {
+			expect(d.vault.files.get('Notes/A.md')).toBe(result);
+		}
+		expect(pane.text()).toBe(result);
+		expect(other.text()).toBe(result);
+		pane.close();
+		other.close();
 	});
 
 	it('keeps a selection over body text selected', async () => {

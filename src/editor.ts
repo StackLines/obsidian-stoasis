@@ -136,17 +136,47 @@ export class SyncedEditor {
 		};
 		// Text inserted at the very start goes before a cursor there: that is
 		// where the server adds frontmatter to a note that had none, and the
-		// next keystroke belongs in the body, not in front of the `---`.
-		if (edits.some((edit) => edit.pos === 0 && edit.ins !== '')) {
-			spec.selection = keepAfterStart(state.selection, changes);
+		// next keystroke belongs in the body, not in front of the `---`. Text
+		// moved within the note, as when what was typed at the start goes after
+		// such frontmatter, takes a cursor in it along.
+		const start = edits.some((edit) => edit.pos === 0 && edit.ins !== '');
+		const move = movedText(edits, (from, to) => state.doc.sliceString(from, to));
+		if (start || move !== null) {
+			spec.selection = mapSelection(state.selection, changes, start, move);
 		}
 		this.view.dispatch(spec);
 	}
 }
 
-/** Maps a selection through changes, moving ends at the start past text inserted there. */
-function keepAfterStart(selection: EditorSelection, changes: ChangeSet): EditorSelection {
-	const map = (pos: number) => changes.mapPos(pos, pos === 0 ? 1 : -1);
+/** Text deleted in one place and the same text inserted in another, by one change. */
+interface Move {
+	from: number;
+	to: number;
+	/** Where it is inserted, in positions before the change. */
+	at: number;
+}
+
+function movedText(edits: readonly TextEdit[], slice: (from: number, to: number) => string): Move | null {
+	const deleted = edits.filter((edit) => edit.del > 0 && edit.ins === '');
+	const inserted = edits.filter((edit) => edit.del === 0 && edit.ins !== '');
+	if (deleted.length !== 1 || inserted.length !== 1) {
+		return null;
+	}
+	const [cut, paste] = [deleted[0]!, inserted[0]!];
+	return slice(cut.pos, cut.pos + cut.del) === paste.ins ? { from: cut.pos, to: cut.pos + cut.del, at: paste.pos } : null;
+}
+
+/**
+ * Maps a selection through changes: with `start`, ends at the start move past
+ * text inserted there; ends in moved text move with it.
+ */
+function mapSelection(selection: EditorSelection, changes: ChangeSet, start: boolean, move: Move | null): EditorSelection {
+	const map = (pos: number) => {
+		if (move !== null && pos >= move.from && pos <= move.to) {
+			return changes.mapPos(move.at, -1) + (pos - move.from);
+		}
+		return changes.mapPos(pos, start && pos === 0 ? 1 : -1);
+	};
 	return EditorSelection.create(
 		selection.ranges.map((range) => EditorSelection.range(map(range.anchor), map(range.head))),
 		selection.mainIndex,

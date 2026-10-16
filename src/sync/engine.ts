@@ -17,6 +17,7 @@ import {
 	toVaultPath,
 } from './paths';
 import { captureBase, mergeOutsideEdit, replacesMost, setText, type MergeBase } from './text';
+import { keepFrontmatterFirst } from './frontmatter-first';
 
 /** The few vault operations the engine needs, with vault-relative paths. */
 export interface VaultAdapter {
@@ -1159,7 +1160,12 @@ export class SyncEngine {
 			waiting: false,
 			unobserve: () => undefined,
 		};
-		const observer = (_event: Y.YTextEvent, { local, origin }: Y.Transaction) => {
+		const observer = (event: Y.YTextEvent, transaction: Y.Transaction) => {
+			const { local } = transaction;
+			const origin: unknown = transaction.origin;
+			if (origin !== ENGINE) {
+				keepFrontmatterFirst(event, transaction);
+			}
 			if (local || origin === ENGINE) {
 				this.markDirty(note);
 			}
