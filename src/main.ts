@@ -37,6 +37,8 @@ import { obsidianVault } from './vault';
 import { TagModal } from './tag-modal';
 import { applyToFrontmatter, propose, stampDate, tooLongToTag } from './tagging';
 import type { PropertyPatch } from './frontmatter-patch';
+import { conflictOriginal, diffLines, keepTheServer, keepThisDevice } from './conflict';
+import { ConflictModal } from './conflict-modal';
 
 /** How long to wait before saving after the sync state changed. */
 const SAVE_DELAY_MS = 2000;
@@ -109,6 +111,20 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 				return true;
 			},
 		});
+		this.addCommand({
+			id: 'compare-conflict-copy',
+			name: 'Compare with the synced note',
+			editorCheckCallback: (checking, _editor, info) => {
+				const file = info.file;
+				if (file === null || !this.isConflictCopy(file)) {
+					return false;
+				}
+				if (!checking) {
+					void this.compareConflict(file);
+				}
+				return true;
+			},
+		});
 		this.registerEvent(
 			this.app.workspace.on('editor-menu', (menu, editor, info) => {
 				const file = info.file;
@@ -121,6 +137,14 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 						.setIcon('tags')
 						.onClick(() => void this.tagNote(file, editor)),
 				);
+				if (this.isConflictCopy(file)) {
+					menu.addItem((item) =>
+						item
+							.setTitle('Compare with the synced note')
+							.setIcon('diff')
+							.onClick(() => void this.compareConflict(file)),
+					);
+				}
 			}),
 		);
 
@@ -322,6 +346,50 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	// Tag now.
+
+	/** Whether `file` is a copy kept in a conflict, with its note still next to it. */
+	private isConflictCopy(file: TFile): boolean {
+		const original = conflictOriginal(file.path);
+		return original !== null && this.app.vault.getAbstractFileByPath(original) instanceof TFile;
+	}
+
+	/** Shows a conflict copy against its note, to keep one of the two. */
+	async compareConflict(copy: TFile): Promise<void> {
+		const original = conflictOriginal(copy.path);
+		const vault = obsidianVault(this.app);
+		const noteName = original?.split('/').pop() ?? '';
+		if (original === null || !vault.exists(original)) {
+			new Notice(`The note this copy was kept for is not next to it any more.`);
+			return;
+		}
+		let device: string;
+		let server: string;
+		try {
+			device = await vault.read(copy.path);
+			server = await vault.read(original);
+		} catch (error) {
+			new Notice(`Stoasis could not read the two notes: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+		new ConflictModal(this.app, copy.name, noteName, diffLines(device, server), async (which) => {
+			try {
+				if (which === 'device') {
+					await keepThisDevice(vault, copy.path, original);
+				} else {
+					await keepTheServer(vault, copy.path);
+				}
+			} catch (error) {
+				new Notice(`Stoasis could not keep it: ${error instanceof Error ? error.message : String(error)}`);
+				return false;
+			}
+			new Notice(
+				which === 'device'
+					? `"${noteName}" now has this device's text; the copy is in the trash.`
+					: `Kept "${noteName}" as the server has it; the copy is in the trash.`,
+			);
+			return true;
+		}).open();
+	}
 
 	/**
 	 * Asks the server for properties for the note's text and shows what would

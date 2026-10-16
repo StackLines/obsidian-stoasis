@@ -34,6 +34,9 @@ export interface VaultAdapter {
 	trash(path: string): Promise<void>;
 }
 
+/** Added to the notice for a conflict copy: how to choose between it and the note. */
+const COMPARE_HINT = ' Open the copy and run "Compare with the synced note" to keep one of them.';
+
 /** What the engine remembers between sessions, per mapped folder. */
 export interface EngineState {
 	/** Notes as they were last seen on disk here: relative path → note id. */
@@ -494,7 +497,7 @@ export class SyncEngine {
 		await this.vault.create(this.path(spare), text);
 		await this.addLocalNote(spare);
 		this.options.onProblem?.(
-			`"${rel}" differed from the server copy; your copy was kept as "${spare}".`,
+			`"${rel}" differed from the server copy; your copy was kept as "${spare}".` + COMPARE_HINT,
 		);
 	}
 
@@ -737,7 +740,7 @@ export class SyncEngine {
 				map.doc?.transact(() => map.set(spare, { id, kind: 'markdown' }), ENGINE);
 				indexed.set(id, spare);
 				this.options.onProblem?.(
-					`Another device also created "${rel}"; this device's copy is now "${spare}".`,
+					`Another device also created "${rel}"; this device's copy is now "${spare}".` + COMPARE_HINT,
 				);
 				continue;
 			}
@@ -935,7 +938,7 @@ export class SyncEngine {
 			await this.addLocalNote(spare);
 			await this.createFile(rel, note);
 			this.options.onProblem?.(
-				`"${rel}" differed from the server copy; your copy was kept as "${spare}".`,
+				`"${rel}" differed from the server copy; your copy was kept as "${spare}".` + COMPARE_HINT,
 			);
 			return;
 		}
