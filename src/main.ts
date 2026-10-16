@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, type Editor } from 'obsidian';
+import { MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, type Editor } from 'obsidian';
 import { ApiError, NotesApi } from './api';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
@@ -38,7 +38,15 @@ import { checkFolder, describeRisk, warningKey } from './folder-warnings';
 import { TagModal } from './tag-modal';
 import { applyToFrontmatter, propose, stampDate, tooLongToTag } from './tagging';
 import type { PropertyPatch } from './frontmatter-patch';
-import { conflictOriginal, diffLines, keepTheServer, keepThisDevice } from './conflict';
+import {
+	conflictOriginal,
+	diffLines,
+	keepSyncedNote,
+	useConflictCopy,
+	type Compared,
+	type ConflictFiles,
+	type KeepResult,
+} from './conflict';
 import { ConflictModal } from './conflict-modal';
 
 /** How long to wait before saving after the sync state changed. */
@@ -354,42 +362,117 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		return original !== null && this.app.vault.getAbstractFileByPath(original) instanceof TFile;
 	}
 
-	/** Shows a conflict copy against its note, to keep one of the two. */
-	async compareConflict(copy: TFile): Promise<void> {
-		const original = conflictOriginal(copy.path);
+	/**
+	 * Shows a conflict copy against its note, to keep one of the two. Both
+	 * are read as open editors show them, unsaved typing included, and
+	 * checked again when a choice is made: if either was renamed, replaced
+	 * or changed meanwhile, nothing is written.
+	 */
+	async compareConflict(shown: TFile): Promise<void> {
+		const path = conflictOriginal(shown.path);
 		const vault = obsidianVault(this.app);
-		const noteName = original?.split('/').pop() ?? '';
-		if (original === null || !vault.exists(original)) {
+		const copy = this.app.vault.getAbstractFileByPath(shown.path);
+		const note = path === null ? null : this.app.vault.getAbstractFileByPath(path);
+		if (!(copy instanceof TFile)) {
+			return;
+		}
+		if (path === null || !(note instanceof TFile)) {
 			new Notice(`The note this copy was kept for is not next to it any more.`);
 			return;
 		}
-		let device: string;
-		let server: string;
-		try {
-			device = await vault.read(copy.path);
-			server = await vault.read(original);
-		} catch (error) {
-			new Notice(`Stoasis could not read the two notes: ${error instanceof Error ? error.message : String(error)}`);
+		const copyName = copy.name;
+		const noteName = note.name;
+		// The files as compared: the app's object for each, and the synced note at each path.
+		const ids = new Map([copy, note].map((file) => [file.path, this.session?.engine.noteAt(file.path)]));
+		const objects = new Map([copy, note].map((file) => [file.path, file]));
+		const files: ConflictFiles = {
+			vault,
+			current: async (at) => {
+				const file = objects.get(at);
+				return (file === undefined ? null : this.openText(file)) ?? (await vault.read(at));
+			},
+			same: (at) => {
+				const then = ids.get(at);
+				const now = this.session?.engine.noteAt(at);
+				return (
+					this.app.vault.getAbstractFileByPath(at) === objects.get(at) &&
+					(then === undefined || now === undefined || then === now)
+				);
+			},
+		};
+		const compare = async (): Promise<Compared | null> => {
+			try {
+				return {
+					copy: copy.path,
+					original: path,
+					copyText: await files.current(copy.path),
+					originalText: await files.current(path),
+				};
+			} catch (error) {
+				new Notice(`Stoasis could not read the two notes: ${error instanceof Error ? error.message : String(error)}`);
+				return null;
+			}
+		};
+		let compared = await compare();
+		if (compared === null) {
 			return;
 		}
-		new ConflictModal(this.app, copy.name, noteName, diffLines(device, server), async (which) => {
-			try {
-				if (which === 'device') {
-					await keepThisDevice(vault, copy.path, original);
-				} else {
-					await keepTheServer(vault, copy.path);
+		new ConflictModal(
+			this.app,
+			copyName,
+			noteName,
+			diffLines(compared.copyText, compared.originalText),
+			async (which) => {
+				const shown = compared as Compared;
+				let result: KeepResult;
+				try {
+					result = which === 'copy' ? await useConflictCopy(files, shown) : await keepSyncedNote(files, shown);
+				} catch (error) {
+					new Notice(`Stoasis could not keep it: ${error instanceof Error ? error.message : String(error)}`);
+					return 'stay';
 				}
-			} catch (error) {
-				new Notice(`Stoasis could not keep it: ${error instanceof Error ? error.message : String(error)}`);
-				return false;
+				switch (result) {
+					case 'kept':
+						new Notice(
+							which === 'copy'
+								? `"${noteName}" now has the text of "${copyName}", which is in the trash.`
+								: `Kept "${noteName}" as it is; "${copyName}" is in the trash.`,
+						);
+						return 'close';
+					case 'copy-changed':
+						new Notice(
+							`"${noteName}" now has the text of "${copyName}" as compared. "${copyName}" changed ` +
+								'meanwhile, so it was kept.',
+						);
+						return 'close';
+					case 'gone':
+						new Notice(
+							`"${copyName}" or "${noteName}" was moved, deleted or replaced while this was open. ` +
+								'Nothing was changed.',
+						);
+						return 'close';
+					case 'changed': {
+						const again = await compare();
+						if (again === null) {
+							return 'close';
+						}
+						compared = again;
+						return { lines: diffLines(again.copyText, again.originalText) };
+					}
+				}
+			},
+		).open();
+	}
+
+	/** The text of `file` as an open editor shows it, saved or not, or null when it is not open. */
+	private openText(file: TFile): string | null {
+		for (const leaf of this.app.workspace.getLeavesOfType('markdown')) {
+			const view = leaf.view;
+			if (view instanceof MarkdownView && view.file === file) {
+				return view.editor.getValue();
 			}
-			new Notice(
-				which === 'device'
-					? `"${noteName}" now has this device's text; the copy is in the trash.`
-					: `Kept "${noteName}" as the server has it; the copy is in the trash.`,
-			);
-			return true;
-		}).open();
+		}
+		return null;
 	}
 
 	/**

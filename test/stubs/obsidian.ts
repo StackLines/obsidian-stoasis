@@ -261,6 +261,25 @@ export class Vault {
 	readonly folders = new Set<string>();
 	readonly adapter: DataAdapter = new DataAdapter(this);
 	private readonly listeners = new Map<string, Set<Listener>>();
+	/** One object per file, as the app keeps: a rename changes its path, a delete drops it. */
+	private readonly objects = new Map<string, TFile>();
+
+	/** The object for the file at `path`. */
+	fileAt(path: string): TFile {
+		let file = this.objects.get(path);
+		if (file === undefined) {
+			file = new TFile(path);
+			this.objects.set(path, file);
+		}
+		return file;
+	}
+	private moveObject(from: string, to: string): TFile {
+		const file = this.fileAt(from);
+		this.objects.delete(from);
+		file.path = to;
+		this.objects.set(to, file);
+		return file;
+	}
 
 	on(name: string, listener: Listener): { name: string; listener: Listener } {
 		let set = this.listeners.get(name);
@@ -281,7 +300,7 @@ export class Vault {
 	}
 	getAbstractFileByPath(path: string): TAbstractFile | null {
 		if (this.files.has(path)) {
-			return new TFile(path);
+			return this.fileAt(path);
 		}
 		return this.folders.has(path) ? new TFolder(path, this.children(path)) : null;
 	}
@@ -296,13 +315,13 @@ export class Vault {
 			const name = path.slice(prefix.length).split('/')[0] ?? '';
 			const child = prefix + name;
 			if (!names.has(child)) {
-				names.set(child, this.files.has(child) ? new TFile(child) : new TFolder(child));
+				names.set(child, this.files.has(child) ? this.fileAt(child) : new TFolder(child));
 			}
 		}
 		return [...names.values()];
 	}
 	getMarkdownFiles(): TFile[] {
-		return [...this.files.keys()].filter((p) => p.endsWith('.md')).map((p) => new TFile(p));
+		return [...this.files.keys()].filter((p) => p.endsWith('.md')).map((p) => this.fileAt(p));
 	}
 	getAllFolders(): TFolder[] {
 		return [...this.folders].map((p) => new TFolder(p));
@@ -317,8 +336,10 @@ export class Vault {
 	}
 	create(path: string, text: string): Promise<TFile> {
 		this.files.set(path, text);
-		this.trigger('create', new TFile(path));
-		return Promise.resolve(new TFile(path));
+		this.objects.delete(path);
+		const file = this.fileAt(path);
+		this.trigger('create', file);
+		return Promise.resolve(file);
 	}
 	modify(file: TFile, text: string): Promise<void> {
 		this.files.set(file.path, text);
@@ -341,7 +362,7 @@ export class Vault {
 					const moved = to + path.slice(from.length);
 					this.files.delete(path);
 					this.files.set(moved, text);
-					this.trigger('rename', new TFile(moved), path);
+					this.trigger('rename', this.moveObject(path, moved), path);
 				}
 			}
 			return Promise.resolve();
@@ -349,7 +370,7 @@ export class Vault {
 		const text = this.files.get(from) ?? '';
 		this.files.delete(from);
 		this.files.set(to, text);
-		this.trigger('rename', new TFile(to), from);
+		this.trigger('rename', this.moveObject(from, to), from);
 		return Promise.resolve();
 	}
 	delete(file: TAbstractFile): Promise<void> {
@@ -357,13 +378,16 @@ export class Vault {
 			for (const path of [...this.files.keys()]) {
 				if (path.startsWith(`${file.path}/`)) {
 					this.files.delete(path);
-					this.trigger('delete', new TFile(path));
+					const gone = this.fileAt(path);
+					this.objects.delete(path);
+					this.trigger('delete', gone);
 				}
 			}
 			this.trigger('delete', new TFolder(file.path));
 			return Promise.resolve();
 		}
 		this.files.delete(file.path);
+		this.objects.delete(file.path);
 		this.trigger('delete', file);
 		return Promise.resolve();
 	}
@@ -480,7 +504,26 @@ export class Menu {
 	}
 }
 
+/** An open Markdown editor: the file it shows and its text, saved or not. */
+export class MarkdownView {
+	constructor(
+		public file: TFile | null,
+		private text: string,
+	) {}
+	editor = {
+		getValue: (): string => this.text,
+		setValue: (text: string): void => {
+			this.text = text;
+		},
+	};
+}
+
 export class Workspace {
+	/** The open panes; tests add Markdown views here. */
+	readonly leaves: Array<{ view: unknown }> = [];
+	getLeavesOfType(type: string): Array<{ view: unknown }> {
+		return type === 'markdown' ? this.leaves.filter((leaf) => leaf.view instanceof MarkdownView) : [];
+	}
 	private readyCallbacks: Array<() => void> = [];
 	private readonly listeners = new Map<string, Listener[]>();
 	layoutReady = false;

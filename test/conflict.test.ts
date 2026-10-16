@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { conflictOriginal, diffLines, keepTheServer, keepThisDevice } from '../src/conflict';
+import { conflictOriginal, diffLines, keepSyncedNote, useConflictCopy, type Compared, type ConflictFiles } from '../src/conflict';
 import { FakeVault } from './helpers/memory-source';
 
 describe('conflictOriginal', () => {
@@ -34,8 +34,8 @@ describe('diffLines', () => {
 			{ kind: 'skip', count: 8 },
 			{ kind: 'same', text: 'line 9' },
 			{ kind: 'same', text: 'line 10' },
-			{ kind: 'device', text: 'mine' },
-			{ kind: 'server', text: 'theirs' },
+			{ kind: 'copy', text: 'mine' },
+			{ kind: 'note', text: 'theirs' },
 			{ kind: 'same', text: 'line 11' },
 			{ kind: 'same', text: 'line 12' },
 			{ kind: 'skip', count: 8 },
@@ -47,12 +47,12 @@ describe('diffLines', () => {
 		const server = ['a', 'b', 'c', 'd', 'e'].join('\n');
 		expect(diffLines(device, server).map((l) => (l.kind === 'skip' ? `…${l.count}` : `${l.kind[0]}${l.text}`))).toEqual([
 			'sa',
-			'dx',
+			'cx',
 			'sb',
 			'sc',
 			'sd',
 			'se',
-			'dy',
+			'cy',
 		]);
 	});
 
@@ -63,12 +63,12 @@ describe('diffLines', () => {
 
 	it('shows text only on one side', () => {
 		expect(diffLines('', 'new')).toEqual([
-			{ kind: 'device', text: '' },
-			{ kind: 'server', text: 'new' },
+			{ kind: 'copy', text: '' },
+			{ kind: 'note', text: 'new' },
 		]);
 		expect(diffLines('a\nb', 'a')).toEqual([
 			{ kind: 'same', text: 'a' },
-			{ kind: 'device', text: 'b' },
+			{ kind: 'copy', text: 'b' },
 		]);
 	});
 
@@ -76,41 +76,89 @@ describe('diffLines', () => {
 		const device = lines(3000).join('\n');
 		const server = lines(3000, 5000).join('\n');
 		const result = diffLines(device, server);
-		expect(result.filter((l) => l.kind === 'device')).toHaveLength(3000);
-		expect(result.filter((l) => l.kind === 'server')).toHaveLength(3000);
-		expect(result[0]).toEqual({ kind: 'device', text: 'line 1' });
-		expect(result[3000]).toEqual({ kind: 'server', text: 'line 5000' });
+		expect(result.filter((l) => l.kind === 'copy')).toHaveLength(3000);
+		expect(result.filter((l) => l.kind === 'note')).toHaveLength(3000);
+		expect(result[0]).toEqual({ kind: 'copy', text: 'line 1' });
+		expect(result[3000]).toEqual({ kind: 'note', text: 'line 5000' });
 	});
 });
 
 describe('keeping one side', () => {
 	const COPY = 'Notes/Ideas (conflict 2026-10-15).md';
+	const NOTE = 'Notes/Ideas.md';
+
+	function setUp() {
+		const vault = new FakeVault();
+		vault.write(NOTE, 'server');
+		vault.write(COPY, 'device');
+		const same = new Set([COPY, NOTE]);
+		const files: ConflictFiles = { vault, current: (path) => vault.read(path), same: (path) => same.has(path) };
+		const compared: Compared = { copy: COPY, original: NOTE, copyText: 'device', originalText: 'server' };
+		return { vault, files, compared, same };
+	}
 
 	it("puts the copy's text into the note and trashes the copy", async () => {
-		const vault = new FakeVault();
-		vault.write('Notes/Ideas.md', 'server');
-		vault.write(COPY, 'device');
-		await keepThisDevice(vault, COPY, 'Notes/Ideas.md');
-		expect(vault.files.get('Notes/Ideas.md')).toBe('device');
+		const { vault, files, compared } = setUp();
+		expect(await useConflictCopy(files, compared)).toBe('kept');
+		expect(vault.files.get(NOTE)).toBe('device');
 		expect(vault.trashed).toEqual([COPY]);
 	});
 
 	it('keeps the copy when the note could not be written', async () => {
-		const vault = new FakeVault();
-		vault.write('Notes/Ideas.md', 'server');
-		vault.write(COPY, 'device');
+		const { vault, files, compared } = setUp();
 		vault.failNext('process');
-		await expect(keepThisDevice(vault, COPY, 'Notes/Ideas.md')).rejects.toThrow('disk write failed');
+		await expect(useConflictCopy(files, compared)).rejects.toThrow('disk write failed');
 		expect(vault.files.get(COPY)).toBe('device');
-		expect(vault.files.get('Notes/Ideas.md')).toBe('server');
+		expect(vault.files.get(NOTE)).toBe('server');
 	});
 
-	it('trashes only the copy to keep the server', async () => {
-		const vault = new FakeVault();
-		vault.write('Notes/Ideas.md', 'server');
-		vault.write(COPY, 'device');
-		await keepTheServer(vault, COPY);
-		expect(vault.files.get('Notes/Ideas.md')).toBe('server');
+	it('trashes only the copy to keep the synced note', async () => {
+		const { vault, files, compared } = setUp();
+		expect(await keepSyncedNote(files, compared)).toBe('kept');
+		expect(vault.files.get(NOTE)).toBe('server');
 		expect(vault.trashed).toEqual([COPY]);
+	});
+
+	it('changes nothing when either text differs from what was compared', async () => {
+		for (const [path, text] of [
+			[COPY, 'device, edited'],
+			[NOTE, 'server, edited'],
+		] as const) {
+			const { vault, files, compared } = setUp();
+			vault.write(path, text);
+			expect(await useConflictCopy(files, compared)).toBe('changed');
+			expect(await keepSyncedNote(files, compared)).toBe('changed');
+			expect(vault.files.get(path)).toBe(text);
+			expect(vault.trashed).toEqual([]);
+		}
+	});
+
+	it('changes nothing when either file is gone or is another file now', async () => {
+		for (const path of [COPY, NOTE]) {
+			const replaced = setUp();
+			replaced.same.delete(path);
+			expect(await useConflictCopy(replaced.files, replaced.compared)).toBe('gone');
+			expect(await keepSyncedNote(replaced.files, replaced.compared)).toBe('gone');
+			expect(replaced.vault.files.get(NOTE)).toBe('server');
+			expect(replaced.vault.trashed).toEqual([]);
+
+			const deleted = setUp();
+			deleted.vault.files.delete(path);
+			expect(await useConflictCopy(deleted.files, deleted.compared)).toBe('gone');
+			expect(await keepSyncedNote(deleted.files, deleted.compared)).toBe('gone');
+			expect(deleted.vault.trashed).toEqual([]);
+		}
+	});
+
+	it('leaves the note as it is when it is written while the copy is put in', async () => {
+		const { vault, files, compared } = setUp();
+		const process = vault.process.bind(vault);
+		vault.process = async (path, update) => {
+			vault.files.set(NOTE, 'server, just synced');
+			await process(path, update);
+		};
+		expect(await useConflictCopy(files, compared)).toBe('changed');
+		expect(vault.files.get(NOTE)).toBe('server, just synced');
+		expect(vault.files.get(COPY)).toBe('device');
 	});
 });

@@ -195,10 +195,13 @@ mobile too. It closes when the download is done.
 When this device's text for a note could not be merged with the server's, the
 plugin keeps it as `<note> (conflict <date>).md` next to the note and says so.
 Open the copy and run **Compare with the synced note** from the command
-palette or the editor menu. It shows the lines that differ. **Keep this
-device** puts the copy's text into the note, which syncs like any edit;
-**Keep the server** leaves the note as it is. Either way the copy goes to the
-trash, where you can still recover it.
+palette or the editor menu. It shows the lines that differ, as open editors
+show them, unsaved typing included. **Use conflict copy** puts the copy's text
+into the note, which syncs like any edit; **Keep current synced note** leaves
+the note as it is. Either way the copy goes to the trash, where you can still
+recover it. If either file was renamed, deleted or replaced while the window
+was open, nothing is changed; if either text changed, the window shows the
+differences again. A copy that changed while the note got its text is kept.
 
 ### Folder warnings
 

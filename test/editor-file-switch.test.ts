@@ -14,7 +14,7 @@ import { replacesMost, setText } from '../src/sync/text';
 import { readPatch } from '../src/frontmatter-patch';
 import { applyToFrontmatter } from '../src/tagging';
 import { splitFrontmatter } from './stubs/obsidian';
-import { keepTheServer, keepThisDevice } from '../src/conflict';
+import { keepSyncedNote, useConflictCopy, type Compared, type ConflictFiles } from '../src/conflict';
 import * as Y from 'yjs';
 import { FakeVault, MemoryDocSource, MemoryHub } from './helpers/memory-source';
 import { memoryDisk, memoryStores } from './helpers/memory-store';
@@ -903,6 +903,26 @@ describe('keeping one side of a conflict copy while the note is open', () => {
 		return { hub, a, b, paneA, paneB, index };
 	}
 
+	/**
+	 * The two files as the plugin compares them on device `d`: each as an
+	 * open pane shows it, else as on disk, and the synced note at each path.
+	 */
+	async function compare(d: Device, ...panes: Pane[]): Promise<{ files: ConflictFiles; compared: Compared }> {
+		const ids = new Map([COPY, 'Notes/A.md'].map((path) => [path, d.engine.noteAt(path)]));
+		const files: ConflictFiles = {
+			vault: d.vault,
+			current: async (path) => panes.find((pane) => pane.file === path)?.text() ?? (await d.vault.read(path)),
+			same: (path) => d.engine.noteAt(path) === ids.get(path),
+		};
+		const compared: Compared = {
+			copy: COPY,
+			original: 'Notes/A.md',
+			copyText: await files.current(COPY),
+			originalText: await files.current('Notes/A.md'),
+		};
+		return { files, compared };
+	}
+
 	const SHOWS: Array<[string, Reload]> = [
 		['the app replaces the editor text', (pane, text) => pane.load(text)],
 		RELOADS[1]!,
@@ -910,7 +930,8 @@ describe('keeping one side of a conflict copy while the note is open', () => {
 	for (const [name, reload] of SHOWS) {
 		it(`keep this device: the note gets the copy's text everywhere, and the copy goes: ${name}`, async () => {
 			const { hub, a, b, paneA, paneB, index } = await withCopy();
-			await keepThisDevice(a.vault, COPY, 'Notes/A.md');
+			const { files, compared } = await compare(a, paneA);
+			expect(await useConflictCopy(files, compared)).toBe('kept');
 			// The app shows the note's new text in its open editor.
 			reload(paneA, COPY_TEXT);
 			await settle(a, b);
@@ -935,13 +956,73 @@ describe('keeping one side of a conflict copy while the note is open', () => {
 
 	it('keep the server: the note stays as it is, and the copy goes', async () => {
 		const { hub, a, b, paneA, paneB } = await withCopy();
-		await keepTheServer(a.vault, COPY);
+		const { files, compared } = await compare(a, paneA);
+		expect(await keepSyncedNote(files, compared)).toBe('kept');
 		await settle(a, b);
 		expect(a.vault.files.has(COPY)).toBe(false);
 		expect(b.vault.files.has(COPY)).toBe(false);
 		expectIntact(hub, a, b);
 		expect(paneA.text()).toBe(ORIGINAL['Notes/A.md']);
 		expect(paneB.text()).toBe(ORIGINAL['Notes/A.md']);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		paneA.close();
+		paneB.close();
+	});
+
+	it('use conflict copy, with the copy open and typed in but not saved: the note gets the typing', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withCopy();
+		const copyPane = new Pane(a.editors, a.vault, COPY);
+		await settle(a, b);
+		const at = copyPane.text().indexOf('A quiet day');
+		copyPane.type(at, 'Unsaved: ');
+		const typed = copyPane.text();
+		expect(a.vault.files.get(COPY)).toBe(COPY_TEXT);
+		const { files, compared } = await compare(a, paneA, copyPane);
+		expect(compared.copyText).toBe(typed);
+		expect(await useConflictCopy(files, compared)).toBe('kept');
+		paneA.load(typed);
+		copyPane.close();
+		await settle(a, b);
+		paneB.save();
+		await settle(a, b);
+
+		expect(a.vault.files.get('Notes/A.md')).toBe(typed);
+		expect(b.vault.files.get('Notes/A.md')).toBe(typed);
+		expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(typed);
+		expect(paneB.text()).toBe(typed);
+		expect(a.vault.files.has(COPY)).toBe(false);
+		expect(b.vault.files.has(COPY)).toBe(false);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		paneA.close();
+		paneB.close();
+	});
+
+	it('use conflict copy, while the other device edits the copy: the edit is kept in the copy', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withCopy();
+		const { files, compared } = await compare(a, paneA);
+		// The other device's edit to the copy arrives while the note gets the copy's text.
+		const edited = COPY_TEXT.replace('A quiet day', 'A quiet day, edited on the other device');
+		const process = a.vault.process.bind(a.vault);
+		a.vault.process = async (path, update) => {
+			a.vault.process = process;
+			await process(path, update);
+			b.vault.write(COPY, edited);
+			await settle(a, b);
+		};
+		expect(await useConflictCopy(files, compared)).toBe('copy-changed');
+		paneA.load(COPY_TEXT);
+		await settle(a, b);
+		paneB.save();
+		await settle(a, b);
+
+		expect(a.vault.files.get('Notes/A.md')).toBe(COPY_TEXT);
+		expect(b.vault.files.get('Notes/A.md')).toBe(COPY_TEXT);
+		expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(COPY_TEXT);
+		expect(a.vault.files.get(COPY)).toBe(edited);
+		expect(b.vault.files.get(COPY)).toBe(edited);
+		expect(a.vault.trashed).toEqual([]);
 		expect(a.problems).toEqual([]);
 		expect(b.problems).toEqual([]);
 		paneA.close();
