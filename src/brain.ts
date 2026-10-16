@@ -37,6 +37,16 @@ export type BrainView =
 
 type ReadyView = Extract<BrainView, { kind: 'ready' }>;
 
+/** What a change makes of the section, kept until it is known to belong to the section still shown. */
+interface Candidate {
+	scan: ScanSettings;
+	space: Space | null;
+	message: string;
+	/** Set when the server refused an owner-only change, or answered 404 for base metadata. */
+	forbidden: boolean;
+	noBaseMetadata: boolean;
+}
+
 export const UNREACHABLE = "Couldn't reach the server. Nothing was changed.";
 const UNREACHABLE_LOAD = "Couldn't reach the server.";
 export const NOT_OWNER = "Only the space's owner can change this.";
@@ -47,7 +57,8 @@ export class Brain {
 	private loadedFor = '';
 	/** Counts resets, so an answer to an earlier load or change is dropped. */
 	private generation = 0;
-	private busy = false;
+	/** The generation a change is being made for, if any. */
+	private busyFor: number | null = null;
 	/** Set when the server refused an owner-only change, or answered 404 for base metadata. */
 	private forbidden = false;
 	private noBaseMetadata = false;
@@ -97,7 +108,7 @@ export class Brain {
 		if (this.generation !== generation) {
 			return;
 		}
-		this.show(scan, space, message);
+		this.show({ scan, space, message, forbidden: false, noBaseMetadata: false });
 	}
 
 	/** Forgets what was loaded, so the next `load` asks again. */
@@ -110,8 +121,8 @@ export class Brain {
 	}
 
 	setScanEnabled(api: BrainApi, enabled: boolean): Promise<void> {
-		return this.change(async (view) => {
-			view.scan = await api.setScanEnabled(enabled);
+		return this.change(async (next) => {
+			next.scan = await api.setScanEnabled(enabled);
 		});
 	}
 
@@ -131,26 +142,26 @@ export class Brain {
 	}
 
 	private ownerChange(make: (space: Space) => Promise<Space>, baseMetadata = false): Promise<void> {
-		return this.change(async (view) => {
-			const space = view.space;
+		return this.change(async (next, view) => {
+			const space = next.space;
 			if (space === null || !view.owner) {
 				return;
 			}
 			try {
-				view.space = await make(space);
+				next.space = await make(space);
 			} catch (error) {
 				if (baseMetadata && notFound(error)) {
 					// The server does not offer base metadata (any more).
-					this.noBaseMetadata = true;
+					next.noBaseMetadata = true;
 					return;
 				}
 				if (error instanceof ApiError && error.kind === 'base-metadata-off') {
 					// Turned off elsewhere since the section was loaded.
-					view.space = { ...space, baseMetadata: false };
+					next.space = { ...space, baseMetadata: false };
 				}
 				if (error instanceof ApiError && error.kind === 'forbidden') {
-					this.forbidden = true;
-					view.message = NOT_OWNER;
+					next.forbidden = true;
+					next.message = NOT_OWNER;
 					return;
 				}
 				throw error;
@@ -158,36 +169,51 @@ export class Brain {
 		});
 	}
 
-	/** Makes one change; on failure the controls show what the server last said. */
-	private async change(make: (view: ReadyView) => Promise<void>): Promise<void> {
+	/**
+	 * Makes one change; on failure the controls show what the server last
+	 * said. What the answer says is kept only when the section still shows
+	 * what the change was made for: an answer to an earlier load is dropped.
+	 */
+	private async change(make: (next: Candidate, view: ReadyView) => Promise<void>): Promise<void> {
 		const view = this.view;
-		if (view.kind !== 'ready' || this.busy) {
+		const generation = this.generation;
+		if (view.kind !== 'ready' || this.busyFor === generation) {
 			return;
 		}
-		const generation = this.generation;
-		const next: ReadyView = { ...view, message: '' };
-		this.busy = true;
+		const next: Candidate = {
+			scan: view.scan,
+			space: view.space,
+			message: '',
+			forbidden: this.forbidden,
+			noBaseMetadata: this.noBaseMetadata,
+		};
+		this.busyFor = generation;
 		try {
-			await make(next);
+			await make(next, view);
 		} catch (error) {
 			next.message = isNetwork(error) ? UNREACHABLE : describeApiError(error);
 		} finally {
-			this.busy = false;
+			if (this.busyFor === generation) {
+				this.busyFor = null;
+			}
 		}
 		if (this.generation === generation) {
-			this.show(next.scan, next.space, next.message);
+			this.show(next);
 		}
 	}
 
-	private show(scan: ScanSettings, space: Space | null, message: string): void {
+	private show(next: Candidate): void {
+		this.forbidden = next.forbidden;
+		this.noBaseMetadata = next.noBaseMetadata;
+		const space = next.space;
 		const owner = space !== null && space.role === 'owner' && !this.forbidden;
 		this.view = {
 			kind: 'ready',
-			scan,
+			scan: next.scan,
 			space,
 			owner,
 			baseMetadata: owner && space.baseMetadata !== null && !this.noBaseMetadata,
-			message,
+			message: next.message,
 		};
 		this.changed();
 	}

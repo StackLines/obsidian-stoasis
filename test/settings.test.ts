@@ -12,7 +12,7 @@ import {
 } from '../src/settings';
 import type { SyncSnapshot } from '../src/status';
 import { ApiError, type ScanMode, type ScanSettings, type Space } from '../src/api';
-import type { BrainApi } from '../src/brain';
+import { Brain, type BrainApi } from '../src/brain';
 
 describe('default settings', () => {
 	it('start in the not paired state', () => {
@@ -575,3 +575,62 @@ describe('settings tab: Brain', () => {
 		expect(names()).toContain('Scan mode for your space');
 	});
 });
+
+describe('Brain, with an answer to a change that arrives after a reload', () => {
+	/** An API whose owner-only changes answer only when told to. */
+	function delayed() {
+		const api = new FakeBrainApi();
+		api.spaces.push({ ...api.spaces[0]!, id: 's2', name: 'Other' });
+		const held: Array<(error: ApiError) => void> = [];
+		const hold = () => new Promise<Space>((_, reject) => held.push(reject));
+		api.setScanMode = (spaceId, mode) => {
+			api.calls.push(`mode ${spaceId} ${mode}`);
+			return hold();
+		};
+		api.setBaseMetadata = (spaceId, enabled) => {
+			api.calls.push(`base ${spaceId} ${enabled}`);
+			return hold();
+		};
+		return { api, refuse: (error: ApiError) => held.shift()!(error) };
+	}
+
+	for (const [what, error, change] of [
+		['403', new ApiError('forbidden', 403), (brain: Brain, api: BrainApi) => brain.setScanMode(api, 'auto')],
+		['404', new ApiError('not-found', 404), (brain: Brain, api: BrainApi) => brain.setBaseMetadata(api, false)],
+	] as const) {
+		it(`keeps the owner controls of the space loaded since, after a late ${what}`, async () => {
+			const { api, refuse } = delayed();
+			const brain = new Brain(() => {});
+			await brain.load(api, 'key', 's1');
+			const pending = change(brain, api);
+			await brain.load(api, 'key', 's2');
+			refuse(error);
+			await pending;
+
+			expect(brain.view).toMatchObject({ kind: 'ready', owner: true, baseMetadata: true, message: '' });
+			expect(brain.view.kind === 'ready' && brain.view.space?.id).toBe('s2');
+
+			// A change made since is not blocked, and nothing of the late answer is left.
+			await brain.setScanEnabled(api, true);
+			expect(api.calls).toContain('scan true');
+			expect(brain.view).toMatchObject({ kind: 'ready', owner: true, baseMetadata: true });
+		});
+	}
+
+	it('takes a change on the space loaded since while the earlier one is still waiting', async () => {
+		const { api, refuse } = delayed();
+		const brain = new Brain(() => {});
+		await brain.load(api, 'key', 's1');
+		const first = brain.setScanMode(api, 'auto');
+		await brain.load(api, 'key', 's1', true);
+		const second = brain.setScanMode(api, 'suggest');
+		expect(api.calls.filter((c) => c.startsWith('mode'))).toEqual(['mode s1 auto', 'mode s1 suggest']);
+		refuse(new ApiError('forbidden', 403));
+		await first;
+		expect(brain.view).toMatchObject({ kind: 'ready', owner: true });
+		refuse(new ApiError('forbidden', 403));
+		await second;
+		expect(brain.view).toMatchObject({ kind: 'ready', owner: false, message: "Only the space's owner can change this." });
+	});
+});
+
