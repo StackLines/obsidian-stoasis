@@ -82,7 +82,7 @@ export class SyncedEditor {
 				continue;
 			}
 			if (isLoad(tr)) {
-				this.handle.loaded();
+				this.handle.loaded(tr.newDoc.toString());
 				continue;
 			}
 			const edits: TextEdit[] = [];

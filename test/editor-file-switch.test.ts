@@ -11,6 +11,9 @@ import { EditorSync } from '../src/sync/binding';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { SyncEngine, emptyEngineState, type EngineState } from '../src/sync/engine';
 import { replacesMost, setText } from '../src/sync/text';
+import { readPatch } from '../src/frontmatter-patch';
+import { applyToFrontmatter } from '../src/tagging';
+import { splitFrontmatter } from './stubs/obsidian';
 import * as Y from 'yjs';
 import { FakeVault, MemoryDocSource, MemoryHub } from './helpers/memory-source';
 import { memoryDisk, memoryStores } from './helpers/memory-store';
@@ -519,4 +522,131 @@ describe('a base metadata stamp arriving while the note is open', () => {
 		await expectEverywhere(pane, hub, a, b, stamp(ORIGINAL['Notes/A.md'] as string));
 		pane.close();
 	});
+});
+
+/**
+ * Tag now on this device: the app's processFrontMatter rewrites the file on
+ * disk, then shows the new text in the open editor, either by replacing it
+ * whole or by changing only what differs.
+ */
+const TAG_PATCH = readPatch({ tags_add: ['daily'], set: { 'brain-type': 'journal' }, actor: 'agent' })!;
+const TAGGED = 'tags:\n  - daily\nbrain-type: journal\nbrain-tagged: 2026-10-16 by agent\n';
+
+async function tagOnDisk(device: Device, path: string): Promise<string> {
+	let written = '';
+	await device.vault.process(path, (text) => {
+		const { frontmatter, body } = splitFrontmatter(text);
+		applyToFrontmatter(frontmatter, TAG_PATCH, '2026-10-16');
+		const yaml = Object.entries(frontmatter)
+			.map(([key, value]) =>
+				Array.isArray(value) ? `${key}:\n${value.map((v) => `  - ${String(v)}`).join('\n')}\n` : `${key}: ${String(value)}\n`,
+			)
+			.join('');
+		written = `---\n${yaml}---\n${body}`;
+		return written;
+	});
+	return written;
+}
+
+type Reload = (pane: Pane, text: string) => void;
+const RELOADS: Array<[string, Reload]> = [
+	[
+		'the app replaces the editor text',
+		(pane, text) => {
+			pane.load(text);
+			// That moves the cursor to the start; the user clicks back.
+			pane.select(text.indexOf('calm day') + 'calm'.length);
+		},
+	],
+	[
+		'the app changes only what differs',
+		(pane, text) => {
+			const current = pane.text();
+			let start = 0;
+			while (start < current.length && start < text.length && current[start] === text[start]) {
+				start++;
+			}
+			let end = 0;
+			while (
+				end < current.length - start &&
+				end < text.length - start &&
+				current[current.length - 1 - end] === text[text.length - 1 - end]
+			) {
+				end++;
+			}
+			pane.dispatch({ changes: { from: start, to: current.length - end, insert: text.slice(start, text.length - end) } });
+		},
+	],
+];
+
+describe('tagging a note while it is open', () => {
+	for (const [name, reload] of RELOADS) {
+		it(`writes the properties once and keeps the typing: ${name}`, async () => {
+			const { hub, a, b } = await pair();
+			const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+			await settle(a, b);
+			const at = (ORIGINAL['Notes/A.md'] as string).indexOf('A quiet day.') + 'A quiet'.length;
+			pane.select(at);
+			pane.typeHere(', calm');
+			pane.save();
+			await settle(a, b);
+
+			const written = await tagOnDisk(a, 'Notes/A.md');
+			reload(pane, written);
+			pane.typeHere(' and sunny');
+			await settle(a, b);
+			pane.save();
+			await settle(a, b);
+
+			const expected = `---\n${TAGGED}---\n${(ORIGINAL['Notes/A.md'] as string).replace('A quiet day.', 'A quiet, calm and sunny day.')}`;
+			expect(pane.text()).toBe(expected);
+			const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+			expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+			expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+			expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+			expect(a.problems).toEqual([]);
+			expect(b.problems).toEqual([]);
+			pane.close();
+		});
+	}
+
+	const NEXT_UPDATES: Array<[string, (pane: Pane) => void, string]> = [
+		['a click', (pane) => pane.select(pane.text().indexOf('A quiet')), 'A quiet day.'],
+		[
+			'typing',
+			(pane) => {
+				pane.select(pane.text().indexOf('A quiet') + 'A quiet'.length);
+				pane.typeHere(', calm');
+			},
+			'A quiet, calm day.',
+		],
+	];
+	for (const [name, next, body] of NEXT_UPDATES) {
+		it(`keeps an edit from another device that arrives before the editor's next update: ${name}`, async () => {
+			const { hub, a, b } = await pair();
+			const pane = new Pane(a.editors, a.vault, 'Notes/A.md');
+			await settle(a, b);
+			const fromB = (ORIGINAL['Notes/A.md'] as string).replace('- Next day', '- Next day\n- Notes from B');
+			b.vault.write('Notes/A.md', fromB);
+			const written = await tagOnDisk(a, 'Notes/A.md');
+			pane.load(written);
+			// B's line reaches this device, and its disk, before the editor updates again.
+			await settle(a, b);
+			expect(a.vault.files.get('Notes/A.md')).toContain('- Notes from B');
+			next(pane);
+			await settle(a, b);
+			pane.save();
+			await settle(a, b);
+
+			const expected = `---\n${TAGGED}---\n${fromB.replace('A quiet day.', body)}`;
+			expect(pane.text()).toBe(expected);
+			const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+			expect(hub.text(noteDocName(index['A.md']!.id))).toBe(expected);
+			expect(a.vault.files.get('Notes/A.md')).toBe(expected);
+			expect(b.vault.files.get('Notes/A.md')).toBe(expected);
+			expect(a.problems).toEqual([]);
+			expect(b.problems).toEqual([]);
+			pane.close();
+		});
+	}
 });
