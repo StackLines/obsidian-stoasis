@@ -46,7 +46,7 @@ between a conflict copy and its note.
   arriving on a device whose file system ignores case. That device now skips
   the one it cannot keep, with a warning, and syncs the rest.
 - Text typed in a note open in an editor while the note was renamed could be
-  added to the note twice.
+  added to the note twice, or, during a case-only rename, lost.
 - An editor that reloaded a note's file while edits from another device were
   arriving could undo those edits.
 - Properties your server adds to a note open in an editor no longer move the

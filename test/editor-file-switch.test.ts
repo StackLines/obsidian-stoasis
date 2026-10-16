@@ -1270,6 +1270,97 @@ describe('a case-only rename while the note is open', () => {
 		paneB.close();
 	});
 
+	for (const saving of [false, true]) {
+		it(`keeps what is typed while a case-only rename goes by way of a temporary name${saving ? ', saved meanwhile' : ''}`, async () => {
+			const { hub, a, b, paneA, paneB, index } = await withPanes();
+			const id = index()['A.md']!.id;
+			const at = paneB.text().indexOf('A quiet day.') + 'A quiet day.'.length;
+			paneB.select(at);
+			paneB.typeHere(' Before.');
+			// At each step the app's view follows the file and updates; the
+			// engine's rename takes a while, and the person types meanwhile.
+			b.vault.onRename = (from, to) => {
+				renameFileObject(b.vault, from, to);
+				paneB.dispatch({});
+			};
+			const rename = b.vault.rename.bind(b.vault);
+			const steps: string[] = [];
+			b.vault.rename = async (from, to) => {
+				await rename(from, to);
+				steps.push(to);
+				await delay(10);
+				paneB.typeHere(` During ${steps.length}.`);
+				if (saving) {
+					paneB.save();
+				}
+				await delay(10);
+			};
+			a.vault.move(NOTE, CASE_ONLY);
+			await settle(a, b);
+			paneB.typeHere(' After.');
+			await settle(a, b);
+			paneA.save();
+			paneB.save();
+			await settle(a, b);
+
+			expect(steps).toEqual(['Notes/A (renaming).md', CASE_ONLY]);
+			const typed = ORIGINAL[NOTE]!.replace('A quiet day.', 'A quiet day. Before. During 1. During 2. After.');
+			expect(hub.text(noteDocName(id))).toBe(typed);
+			expect(index()['a.md']!.id).toBe(id);
+			for (const d of [a, b]) {
+				expect(d.vault.files.get(CASE_ONLY)).toBe(typed);
+				expect(d.vault.files.has('Notes/A (renaming).md')).toBe(false);
+				expect(d.problems).toEqual([]);
+			}
+			expect(paneA.text()).toBe(typed);
+			expect(paneB.text()).toBe(typed);
+			expect(paneB.file).toBe(CASE_ONLY);
+			paneA.close();
+			paneB.close();
+		});
+	}
+
+	it('drops what a rename kept when the editor switches files before the rename is done', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withPanes();
+		const id = index()['A.md']!.id;
+		b.vault.onRename = (from, to) => {
+			renameFileObject(b.vault, from, to);
+			paneB.dispatch({});
+		};
+		const rename = b.vault.rename.bind(b.vault);
+		let switched = false;
+		b.vault.rename = async (from, to) => {
+			await rename(from, to);
+			if (!switched) {
+				switched = true;
+				// Mid-rename, the pane opens B, then the renamed note again.
+				paneB.loadThenPoint('Notes/B.md', ORIGINAL['Notes/B.md']!);
+				await delay(10);
+				paneB.nudge();
+			}
+		};
+		a.vault.move(NOTE, CASE_ONLY);
+		await settle(a, b);
+		paneB.loadThenPoint(CASE_ONLY, b.vault.files.get(CASE_ONLY)!);
+		await settle(a, b);
+		paneB.nudge();
+		await settle(a, b);
+		paneA.save();
+		paneB.save();
+		await settle(a, b);
+
+		expect(hub.text(noteDocName(id))).toBe(ORIGINAL[NOTE]);
+		expect(hub.text(noteDocName(index()['B.md']!.id))).toBe(ORIGINAL['Notes/B.md']);
+		for (const d of [a, b]) {
+			expect(d.vault.files.get(CASE_ONLY)).toBe(ORIGINAL[NOTE]);
+			expect(d.vault.files.get('Notes/B.md')).toBe(ORIGINAL['Notes/B.md']);
+			expect(d.problems).toEqual([]);
+		}
+		expect(paneB.text()).toBe(ORIGINAL[NOTE]);
+		paneA.close();
+		paneB.close();
+	});
+
 	it('downloads a note skipped for a case clash once the open note here is renamed', async () => {
 		const { hub, a, b, paneA, paneB, index } = await withPanes();
 		a.vault.ignoresCase = false;
