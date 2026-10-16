@@ -1,6 +1,12 @@
 import type * as Y from 'yjs';
 import type { NoteLink } from './engine';
-import { diffText, type TextEdit } from './text';
+import { diffText, type MergeBase, type TextEdit } from './text';
+
+/** The note an editor was linked to when its file got a new name, and its state then. */
+interface Snapshot {
+	id: string;
+	base: MergeBase;
+}
 
 /** One open editor, as the binding sees it. */
 export interface EditorPort {
@@ -22,19 +28,25 @@ class Binding {
 	 * `claim` is the text the editor held when it last showed a file it was
 	 * not linked for, or null when its text is known to be this file's.
 	 * `loaded` is the file's text the app last loaded into it, when known.
+	 * `since` is set when the editor was linked to this same note under its
+	 * old name: the editor's text was the note's then.
 	 */
 	constructor(
 		private readonly link: NoteLink,
 		private readonly port: EditorPort,
 		claim: string | null,
 		loaded: string | null,
+		since: MergeBase | null,
 	) {
 		// The editor may show text from before remote changes arrived, or edits
 		// made while the note was loading: merge it in, then show the result.
 		// Right after the editor switched files, its text can still be the
 		// previous file's: merge it only if it started out as this note's.
-		// Otherwise the note's text wins and replaces it.
-		if (claim === null || link.owns(claim)) {
+		// Otherwise the note's text wins and replaces it. After a rename, only
+		// what was typed since the editor let go of the old name is new.
+		if (since !== null) {
+			link.adopt(port.text(), null, since);
+		} else if (claim === null || link.owns(claim)) {
 			link.adopt(port.text(), loaded);
 		}
 		const edits = diffText(port.text(), link.text.toJSON());
@@ -67,6 +79,11 @@ class Binding {
 				}
 			}
 		}, this);
+	}
+
+	/** The note and its state now, which the editor's text matches. */
+	snapshot(): Snapshot {
+		return { id: this.link.id, base: this.link.snapshot() };
 	}
 
 	release(): void {
@@ -191,6 +208,8 @@ export class EditorHandle {
 	/** The text the app loaded into the editor while it showed `path`, until linked. */
 	private loadedText: string | null = null;
 	private holding = false;
+	/** Set when the file was renamed while linked, until the editor links again. */
+	private renamed: Snapshot | null = null;
 
 	constructor(
 		private readonly owner: EditorSync,
@@ -220,6 +239,8 @@ export class EditorHandle {
 			return;
 		}
 		const old = this.path;
+		// Still linking after an earlier rename: that snapshot still holds.
+		this.renamed = this.binding !== null ? this.binding.snapshot() : this.linking ? this.renamed : null;
 		this.unbind();
 		this.holding = false;
 		this.path = path;
@@ -238,6 +259,7 @@ export class EditorHandle {
 	 * loaded.
 	 */
 	loaded(text: string): void {
+		this.renamed = null;
 		this.unbind();
 		this.holding = true;
 		this.loadedText = text;
@@ -280,8 +302,11 @@ export class EditorHandle {
 					return;
 				}
 				this.linking = false;
+				const renamed = this.renamed;
+				this.renamed = null;
 				if (link !== null) {
-					this.binding = new Binding(link, this.port, this.claim, this.loadedText);
+					const since = renamed !== null && renamed.id === link.id ? renamed.base : null;
+					this.binding = new Binding(link, this.port, this.claim, this.loadedText, since);
 					this.claim = null;
 					this.loadedText = null;
 				}

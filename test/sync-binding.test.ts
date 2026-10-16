@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import { deltaToEdits, EditorSync, type EditorPort } from '../src/sync/binding';
 import type { NoteLink } from '../src/sync/engine';
-import { setText, type TextEdit } from '../src/sync/text';
+import { captureBase, setText, type TextEdit } from '../src/sync/text';
 
 /** An editor without a screen: CodeMirror state plus the binding's hooks. */
 class TestEditor implements EditorPort {
@@ -62,7 +62,9 @@ class TestLinker {
 		this.links.push(path);
 		const text = this.doc(path).getText('content');
 		return Promise.resolve({
+			id: path,
 			text,
+			snapshot: () => captureBase(this.doc(path), 'content'),
 			adopt: (editorText: string) => {
 				if (text.length === 0) {
 					setText(text, editorText);
