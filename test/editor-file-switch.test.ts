@@ -14,6 +14,7 @@ import { replacesMost, setText } from '../src/sync/text';
 import { readPatch } from '../src/frontmatter-patch';
 import { applyToFrontmatter } from '../src/tagging';
 import { splitFrontmatter } from './stubs/obsidian';
+import { keepTheServer, keepThisDevice } from '../src/conflict';
 import * as Y from 'yjs';
 import { FakeVault, MemoryDocSource, MemoryHub } from './helpers/memory-source';
 import { memoryDisk, memoryStores } from './helpers/memory-store';
@@ -649,4 +650,71 @@ describe('tagging a note while it is open', () => {
 			pane.close();
 		});
 	}
+});
+
+/**
+ * A copy kept in a conflict is a note of its own, synced like any other.
+ * Keeping one side writes the note on disk while it may be open, and trashes
+ * the copy, on this device; sync carries both to the other device.
+ */
+describe('keeping one side of a conflict copy while the note is open', () => {
+	const COPY = 'Notes/A (conflict 2026-10-16).md';
+	const COPY_TEXT = day(1, 'Write the summary', 'A quiet day, written on this device while it was offline.');
+
+	async function withCopy() {
+		const { hub, a, b } = await pair();
+		a.vault.write(COPY, COPY_TEXT);
+		await settle(a, b);
+		expect(b.vault.files.get(COPY)).toBe(COPY_TEXT);
+		const paneA = new Pane(a.editors, a.vault, 'Notes/A.md');
+		const paneB = new Pane(b.editors, b.vault, 'Notes/A.md');
+		await settle(a, b);
+		const index = () => hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		return { hub, a, b, paneA, paneB, index };
+	}
+
+	const SHOWS: Array<[string, Reload]> = [
+		['the app replaces the editor text', (pane, text) => pane.load(text)],
+		RELOADS[1]!,
+	];
+	for (const [name, reload] of SHOWS) {
+		it(`keep this device: the note gets the copy's text everywhere, and the copy goes: ${name}`, async () => {
+			const { hub, a, b, paneA, paneB, index } = await withCopy();
+			await keepThisDevice(a.vault, COPY, 'Notes/A.md');
+			// The app shows the note's new text in its open editor.
+			reload(paneA, COPY_TEXT);
+			await settle(a, b);
+			paneB.save();
+			await settle(a, b);
+
+			expect(a.vault.trashed).toEqual([COPY]);
+			expect(a.vault.files.has(COPY)).toBe(false);
+			expect(b.vault.files.has(COPY)).toBe(false);
+			expect(Object.keys(index()).sort()).toEqual(['A.md', 'B.md', 'C.md']);
+			expect(hub.text(noteDocName(index()['A.md']!.id))).toBe(COPY_TEXT);
+			expect(a.vault.files.get('Notes/A.md')).toBe(COPY_TEXT);
+			expect(b.vault.files.get('Notes/A.md')).toBe(COPY_TEXT);
+			expect(paneA.text()).toBe(COPY_TEXT);
+			expect(paneB.text()).toBe(COPY_TEXT);
+			expect(a.problems).toEqual([]);
+			expect(b.problems).toEqual([]);
+			paneA.close();
+			paneB.close();
+		});
+	}
+
+	it('keep the server: the note stays as it is, and the copy goes', async () => {
+		const { hub, a, b, paneA, paneB } = await withCopy();
+		await keepTheServer(a.vault, COPY);
+		await settle(a, b);
+		expect(a.vault.files.has(COPY)).toBe(false);
+		expect(b.vault.files.has(COPY)).toBe(false);
+		expectIntact(hub, a, b);
+		expect(paneA.text()).toBe(ORIGINAL['Notes/A.md']);
+		expect(paneB.text()).toBe(ORIGINAL['Notes/A.md']);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+		paneA.close();
+		paneB.close();
+	});
 });

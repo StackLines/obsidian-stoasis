@@ -95,7 +95,7 @@ function rendered(modal: TagModal) {
 describe('Tag this note now', () => {
 	it('is a command for markdown notes in an editor', async () => {
 		const { plugin, editor } = await setUp();
-		expect(plugin.commands.map((c) => c.name)).toEqual(['Tag this note now']);
+		expect(plugin.commands.map((c) => c.name)).toContain('Tag this note now');
 		expect(await runCommand(plugin, editor, null)).toBe(false);
 		expect(await runCommand(plugin, editor, new TFile('Local/Board.canvas'))).toBe(false);
 	});

@@ -77,6 +77,8 @@ export interface RenderedItem {
 	desc?: string;
 	text?: string;
 	controls?: Control[];
+	/** What was added inside an element. */
+	children?: RenderedItem[];
 }
 
 export class ContainerEl {
@@ -88,8 +90,14 @@ export class ContainerEl {
 		this.items.length = 0;
 	}
 	createEl(tag: string, options: { cls?: string; text?: string } = {}): ContainerEl {
-		this.items.push({ kind: 'element', tag, ...options });
-		return new ContainerEl();
+		const child = new ContainerEl();
+		this.items.push({ kind: 'element', tag, ...options, children: child.items });
+		return child;
+	}
+	createDiv(options: { cls?: string; text?: string } = {}): ContainerEl {
+		const child = new ContainerEl();
+		this.items.push({ kind: 'element', tag: 'div', ...options, children: child.items });
+		return child;
 	}
 	setText(text: string): void {
 		this.text = text;
