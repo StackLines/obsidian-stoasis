@@ -135,10 +135,21 @@ export class Brain {
 	}
 
 	requestBaseBackfill(api: BrainApi): Promise<void> {
-		return this.ownerChange(
-			async (space) => (await api.requestBaseBackfill(space.id)) ?? { ...space, baseBackfillRequested: true },
-			true,
-		);
+		return this.ownerChange(async (space) => {
+			const updated = await api.requestBaseBackfill(space.id);
+			if (updated !== null) {
+				return updated;
+			}
+			// An empty answer: the request was taken, so it is pending; the rest
+			// of the space is read again, and kept as it was if that fails.
+			let fresh: Space | undefined;
+			try {
+				fresh = (await api.listSpaces()).find((s) => s.id === space.id);
+			} catch {
+				fresh = undefined;
+			}
+			return { ...(fresh ?? space), baseBackfillRequested: true };
+		}, true);
 	}
 
 	private ownerChange(make: (space: Space) => Promise<Space>, baseMetadata = false): Promise<void> {
