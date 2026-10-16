@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-16
+
+Tags a note when you ask, adds the Brain settings, and lets you choose
+between a conflict copy and its note.
+
+### Added
+
+- **Tag this note now**, from the command palette or the editor menu of a
+  Markdown note. Your server suggests tags and properties for the note's text
+  and keeps nothing; a window shows each proposed change and where it came
+  from, and **Apply** writes them into the frontmatter. It works for notes
+  that are not synced, on a device that is only paired.
+- Frontmatter changes follow version 2 of the tagging contract: new
+  properties, base properties that are only ever filled in, task and open
+  point lists that are replaced, and the new order of added properties.
+- A **Brain** section in the settings tab, when your server offers it:
+  **Scan my notes automatically**, and for the owner of the synced space its
+  scan mode, base metadata, and **Add base metadata to existing notes**.
+- **Compare with the synced note**, for a conflict copy: shows the lines that
+  differ and keeps either this device's text or the server's, moving the copy
+  to the trash.
+- A warning, once for each folder, when the vault is in iCloud Drive or
+  Dropbox, Obsidian Sync is on, the folder is in a git working tree, or new
+  attachments go outside the folder.
+
+### Changed
+
+- The disclosure says that a note you tag is sent to your server.
+- The notice for a new conflict copy says how to compare it with the note.
+
+### Fixed
+
+- Renaming a note so that only the case of its name changes (`note.md` to
+  `Note.md`) failed on devices whose file system ignores case, as on macOS,
+  iOS and Windows.
+- Text typed in a note open in an editor while the note was renamed could be
+  added to the note twice.
+- An editor that reloaded a note's file while edits from another device were
+  arriving could undo those edits.
+- Properties your server adds to a note open in an editor no longer move the
+  cursor out of the text you are typing.
+
 ## [0.1.1] - 2026-10-15
 
 Downloads your space to a new device in one step, and fixes a note's text
