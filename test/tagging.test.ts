@@ -38,9 +38,9 @@ describe('propose', () => {
 			DATE,
 		);
 		expect(proposal.lines).toEqual([
-			{ key: 'brain-people', text: 'adds [[Alice Stone]]', sources: ['Alice Stone: wikilink'] },
+			{ key: 'brain-people', text: 'adds [[Alice Stone]]', sources: ['Alice Stone: linked in the note'] },
 			{ key: 'tags', text: 'adds garden', sources: [] },
-			{ key: 'brain-topics', text: 'adds Garden', sources: ['Topic Garden: name in text (matched "gardens")'] },
+			{ key: 'brain-topics', text: 'adds Garden', sources: ['Topic Garden: named in the text (matched "gardens")'] },
 			{ key: 'brain-tagged', text: `${DATE} by agent`, sources: [] },
 		]);
 		expect(proposal.others).toEqual([]);
@@ -65,7 +65,7 @@ describe('propose', () => {
 		);
 		expect(proposal.lines).toEqual([]);
 		expect(proposal.patch).toBeNull();
-		expect(proposal.others).toEqual(['Alice Stone: wikilink']);
+		expect(proposal.others).toEqual(['Alice Stone: linked in the note']);
 	});
 
 	it('has nothing to apply without a patch', () => {
@@ -92,8 +92,10 @@ describe('propose', () => {
 
 describe('describing', () => {
 	it('names people and topics with the reason and what matched', () => {
-		expect(describeMatch(person)).toBe('Alice Stone: wikilink');
-		expect(describeMatch(topic)).toBe('Topic Garden: name in text (matched "gardens")');
+		expect(describeMatch(person)).toBe('Alice Stone: linked in the note');
+		expect(describeMatch(topic)).toBe('Topic Garden: named in the text (matched "gardens")');
+		expect(describeMatch({ ...person, reason: 'alias_in_text' })).toBe('Alice Stone: alias in text');
+		expect(describeMatch({ ...person, reason: 'toString' })).toBe('Alice Stone: toString');
 		expect(describeMatch({ kind: 'topic', id: TOPIC, name: '', reason: '', matched: 'gardens' })).toBe('Topic gardens');
 	});
 

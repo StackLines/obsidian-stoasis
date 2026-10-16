@@ -243,7 +243,8 @@ Markdown note. The plugin sends the note's text to your server, which suggests
 tags and properties and keeps nothing. A window shows the proposed changes,
 one line per property, with where each value came from (for example, a link to
 a person's note). **Apply** writes them into the note's frontmatter and
-records when it was tagged; **Cancel** writes nothing. The values of other
+records when it was tagged (`brain-tagged`, with the date in UTC, like
+`brain-created`); **Cancel** writes nothing. The values of other
 properties stay as they are, though the app may rewrite how the frontmatter is
 formatted. If the note's properties changed after the suggestion was made,
 **Apply** writes nothing and asks your server for a new suggestion. The note

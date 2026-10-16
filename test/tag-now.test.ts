@@ -108,8 +108,8 @@ describe('Tag this note now', () => {
 		expect(view.texts).toEqual(['Proposed changes to "Plans":']);
 		expect(view.lines).toEqual([
 			'tags: adds garden.',
-			'brain-people: adds [[Alice Stone]]. From Alice Stone: wikilink.',
-			'brain-topics: adds Garden. From Topic Garden: name in text (matched "gardens").',
+			'brain-people: adds [[Alice Stone]]. From Alice Stone: linked in the note.',
+			'brain-topics: adds Garden. From Topic Garden: named in the text (matched "gardens").',
 			expect.stringMatching(/^brain-tagged: \d{4}-\d{2}-\d{2} by agent\.$/),
 		]);
 		expect(view.buttons.map((b) => b.label)).toEqual(['Cancel', 'Apply']);
