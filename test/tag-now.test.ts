@@ -129,16 +129,70 @@ describe('Tag this note now', () => {
 		expect(notices).toEqual(['Asking the server for properties…', 'Tagged "Plans".']);
 	});
 
-	it('applies to the frontmatter as it is when Apply is pressed', async () => {
+	it('applies when only the text below the frontmatter changed', async () => {
 		const { app, plugin, file, editor } = await setUp();
 		await runCommand(plugin, editor, file);
-		// The note changed while the proposal was open.
-		app.vault.files.set(NOTE, '---\ntags:\n  - Garden\n  - work\n---\nNew text.\n');
+		app.vault.files.set(NOTE, TEXT.replace('about the gardens.', 'about the gardens, and typed since.'));
 		await rendered(lastModal()).buttons.find((b) => b.label === 'Apply')?.click();
-		expect(app.vault.files.get(NOTE)).toMatch(
-			/^---\ntags:\n {2}- Garden\n {2}- work\nbrain-people:\n {2}- \[\[Alice Stone\]\]\nbrain-topics:\n/,
+		expect(app.vault.files.get(NOTE)).toMatch(/^---\ntitle: Plans\nbrain-created: 2026-10-01\ntags:\n {2}- garden\n/);
+		expect(app.vault.files.get(NOTE)).toMatch(/\n---\nMet \[\[Alice Stone\]\] about the gardens, and typed since\.\n$/);
+	});
+
+	it('writes nothing when the frontmatter changed since the suggestion, and asks for a new one', async () => {
+		const { app, plugin, file, editor } = await setUp();
+		await runCommand(plugin, editor, file);
+		const stale = lastModal();
+		// Another edit adds a person while the proposal is open; the proposal would replace the list.
+		const changed = '---\nbrain-people:\n  - [[Bob Example]]\n---\nMet [[Alice Stone]].\n';
+		app.vault.files.set(NOTE, changed);
+		app.metadataCache.parse(NOTE, changed);
+		await rendered(stale).buttons.find((b) => b.label === 'Apply')?.click();
+		for (let i = 0; i < 10; i++) {
+			await Promise.resolve();
+		}
+		expect(app.vault.files.get(NOTE)).toBe(changed);
+		expect(stale.isOpen).toBe(false);
+		expect(notices).toContain(
+			'The properties of "Plans" changed since the suggestion, so nothing was written. Asking for a new suggestion.',
 		);
-		expect(app.vault.files.get(NOTE)).toMatch(/\n---\nNew text\.\n$/);
+		expect(control.suggested).toEqual([TEXT, changed]);
+		const fresh = lastModal();
+		expect(fresh).not.toBe(stale);
+		expect(fresh.isOpen).toBe(true);
+	});
+
+	it('checks the file itself as it writes, when the editor still shows the old properties', async () => {
+		const { app, plugin, file } = await setUp();
+		const editor = { getValue: () => TEXT };
+		await runCommand(plugin, editor, file);
+		const changed = '---\nbrain-people:\n  - [[Bob Example]]\n---\nMet [[Alice Stone]].\n';
+		app.vault.files.set(NOTE, changed);
+		await rendered(lastModal()).buttons.find((b) => b.label === 'Apply')?.click();
+		expect(app.vault.files.get(NOTE)).toBe(changed);
+		expect(notices).toContain(
+			'The properties of "Plans" changed since the suggestion, so nothing was written. Asking for a new suggestion.',
+		);
+	});
+
+	it('asks only once more when the frontmatter keeps changing', async () => {
+		const { app, plugin, file, editor } = await setUp();
+		await runCommand(plugin, editor, file);
+		app.vault.files.set(NOTE, '---\ntitle: Plans, renamed\n---\nMet [[Alice Stone]].\n');
+		await rendered(lastModal()).buttons.find((b) => b.label === 'Apply')?.click();
+		for (let i = 0; i < 10; i++) {
+			await Promise.resolve();
+		}
+		const changed = '---\ntitle: Plans, renamed again\n---\nMet [[Alice Stone]].\n';
+		app.vault.files.set(NOTE, changed);
+		await rendered(lastModal()).buttons.find((b) => b.label === 'Apply')?.click();
+		for (let i = 0; i < 10; i++) {
+			await Promise.resolve();
+		}
+		expect(app.vault.files.get(NOTE)).toBe(changed);
+		expect(control.suggested).toHaveLength(2);
+		expect(notices.at(-1)).toBe(
+			'The properties of "Plans" changed since the suggestion, so nothing was written. Run "Tag this note now" again.',
+		);
 	});
 
 	it('writes nothing on Cancel', async () => {
