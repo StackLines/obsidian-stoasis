@@ -130,11 +130,19 @@ function explains(match: PropertyMatch, key: string, added: readonly unknown[]):
 	return false;
 }
 
-/** "Alice Stone: wikilink", or "Topic Garden: name in text (matched "gardens")". */
+/** How a match came about, for the reasons the server is known to give. */
+const REASONS: Record<string, string> = {
+	wikilink: 'linked in the note',
+	name_in_text: 'named in the text',
+};
+
+/** "Alice Stone: linked in the note", or "Topic Garden: named in the text (matched "gardens")". */
 export function describeMatch(match: PropertyMatch): string {
 	const name = match.name !== '' ? match.name : match.matched;
 	const label = match.kind === 'topic' ? `Topic ${name}` : name;
-	const reason = match.reason.replace(/_/g, ' ');
+	// Other reasons are shown as they come, made readable.
+	const known = Object.prototype.hasOwnProperty.call(REASONS, match.reason);
+	const reason = known ? REASONS[match.reason] : match.reason.replace(/_/g, ' ');
 	let text = reason === '' ? label : `${label}: ${reason}`;
 	if (match.matched !== '' && match.matched !== name) {
 		text += ` (matched "${match.matched}")`;
