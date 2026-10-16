@@ -189,6 +189,14 @@ export class FakeVault implements VaultAdapter {
 	readonly trashed: string[] = [];
 	listener: VaultListener | null = null;
 	ioDelayMs = 0;
+	/**
+	 * Like a file system that ignores case, as on macOS and iOS: "Note.md" is
+	 * the file "note.md", so the engine may not create or move a file there.
+	 * The user's own moves still work, as the app's file explorer does them.
+	 */
+	ignoresCase = false;
+	/** Called as a file is renamed, as the app's open views follow it. */
+	onRename: ((from: string, to: string) => void) | null = null;
 	private readonly faults: Array<{ op: VaultOperation; path: string | null; message: string }> = [];
 	private readonly lateFaults: Array<{ path: string | null; message: string }> = [];
 
@@ -221,7 +229,7 @@ export class FakeVault implements VaultAdapter {
 
 	async create(path: string, text: string): Promise<void> {
 		await this.io('create', path);
-		if (this.files.has(path)) {
+		if (this.files.has(path) || this.inOtherCase(path)) {
 			throw new Error(`File exists: ${path}`);
 		}
 		this.files.set(path, text);
@@ -249,11 +257,12 @@ export class FakeVault implements VaultAdapter {
 	async rename(from: string, to: string): Promise<void> {
 		await this.io('rename', from);
 		const text = this.files.get(from);
-		if (text === undefined || this.files.has(to)) {
+		if (text === undefined || this.files.has(to) || this.inOtherCase(to)) {
 			throw new Error(`Cannot rename ${from} to ${to}`);
 		}
 		this.files.delete(from);
 		this.files.set(to, text);
+		this.onRename?.(from, to);
 		this.emit((l) => l.fileRenamed(to, from));
 	}
 
@@ -286,7 +295,13 @@ export class FakeVault implements VaultAdapter {
 		}
 		this.files.delete(from);
 		this.files.set(to, text);
+		this.onRename?.(from, to);
 		this.emit((l) => l.fileRenamed(to, from));
+	}
+
+	/** Whether, ignoring case, another name for `path` is taken. */
+	private inOtherCase(path: string): boolean {
+		return this.ignoresCase && [...this.files.keys()].some((p) => p !== path && p.toLowerCase() === path.toLowerCase());
 	}
 
 	private async io(op: VaultOperation, path: string): Promise<void> {
