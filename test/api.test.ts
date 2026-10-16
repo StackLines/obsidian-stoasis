@@ -78,14 +78,42 @@ describe('NotesApi', () => {
 		const { api } = client(() =>
 			json(200, {
 				spaces: [
-					{ space_id: 's1', name: 'Mine', kind: 'personal', role: 'owner', scan_mode: 'suggest', archived: false },
+					{
+						space_id: 's1',
+						name: 'Mine',
+						kind: 'personal',
+						role: 'owner',
+						scan_mode: 'suggest',
+						archived: false,
+						base_metadata: false,
+						base_backfill_requested: true,
+					},
 					{ space_id: 's2', kind: 'team', role: 'admin', scan_mode: 'later' },
 				],
 			}),
 		);
 		expect(await api.withKey('k').listSpaces()).toEqual([
-			{ id: 's1', name: 'Mine', kind: 'personal', role: 'owner', scanMode: 'suggest', archived: false },
-			{ id: 's2', name: '', kind: 'personal', role: 'viewer', scanMode: 'off', archived: false },
+			{
+				id: 's1',
+				name: 'Mine',
+				kind: 'personal',
+				role: 'owner',
+				scanMode: 'suggest',
+				archived: false,
+				baseMetadata: false,
+				baseBackfillRequested: true,
+			},
+			// A server without base metadata yet says nothing about it.
+			{
+				id: 's2',
+				name: '',
+				kind: 'personal',
+				role: 'viewer',
+				scanMode: 'off',
+				archived: false,
+				baseMetadata: null,
+				baseBackfillRequested: false,
+			},
 		]);
 	});
 
@@ -114,6 +142,48 @@ describe('NotesApi', () => {
 		]);
 	});
 
+	it('switches base metadata and asks for it in older notes', async () => {
+		const space = { space_id: 's1', role: 'owner', scan_mode: 'auto', base_metadata: true, base_backfill_requested: true };
+		let answer: HttpResponse = json(200, space);
+		const { api, sent } = client(() => answer);
+		const keyed = api.withKey('k');
+		expect((await keyed.setBaseMetadata('s1', true)).baseMetadata).toBe(true);
+		expect((await keyed.requestBaseBackfill('s1'))?.baseBackfillRequested).toBe(true);
+		// The answer to a backfill request is not specified beyond success.
+		answer = { status: 202, headers: {}, text: '' };
+		expect(await keyed.requestBaseBackfill('s1')).toBeNull();
+		answer = json(409, { error: 'base_metadata_off', message: 'x' });
+		expect((await failure(keyed.requestBaseBackfill('s1'))).kind).toBe('base-metadata-off');
+		expect(sent.map((r) => `${r.method} ${r.url.slice(SERVER.length)} ${r.body ?? ''}`)).toEqual([
+			'PUT /notes/api/spaces/s1/base-metadata {"base_metadata":true}',
+			'POST /notes/api/spaces/s1/base-metadata/backfill ',
+			'POST /notes/api/spaces/s1/base-metadata/backfill ',
+			'POST /notes/api/spaces/s1/base-metadata/backfill ',
+		]);
+	});
+
+	it('asks for properties for a note, and reads the patch strictly', async () => {
+		let answer: unknown = {
+			patch: { tags_add: ['garden'], set: { 'brain-people': ['[[Alice Stone]]'] }, actor: 'agent' },
+			matches: [{ kind: 'person', id: 'p1', name: 'Alice Stone', reason: 'wikilink', matched: 'Alice Stone' }, 'junk'],
+			errors: [{ key: null, code: 'frontmatter_unparseable' }],
+		};
+		const { api, sent } = client(() => json(200, answer));
+		const keyed = api.withKey('k');
+		expect(await keyed.suggestProperties('# Note\n')).toEqual({
+			patch: { tagsAdd: ['garden'], set: { 'brain-people': ['[[Alice Stone]]'] }, actor: 'agent' },
+			matches: [{ kind: 'person', id: 'p1', name: 'Alice Stone', reason: 'wikilink', matched: 'Alice Stone' }],
+			errors: [{ key: null, code: 'frontmatter_unparseable' }],
+		});
+		expect(sent[0]).toMatchObject({ method: 'POST', url: `${SERVER}/notes/api/suggest-properties` });
+		expect(JSON.parse(sent[0]?.body ?? '')).toEqual({ markdown: '# Note\n' });
+
+		answer = { patch: null, matches: [], errors: [] };
+		expect((await keyed.suggestProperties('x')).patch).toBeNull();
+		answer = { patch: { tags_add: [], set: { title: 'x' }, actor: 'agent' }, matches: [], errors: [] };
+		expect((await failure(keyed.suggestProperties('x'))).kind).toBe('unexpected');
+	});
+
 	it('revokes a device by id and accepts an empty answer', async () => {
 		const { api, sent } = client(() => ({ status: 204, headers: {}, text: '' }));
 		await api.withKey('k').revokeDevice('key 1');
@@ -128,6 +198,7 @@ describe('NotesApi', () => {
 		[400, 'invalid_request', 'invalid-request'],
 		[404, 'not_found', 'not-found'],
 		[503, 'database_unavailable', 'unavailable'],
+		[409, 'base_metadata_off', 'base-metadata-off'],
 		[401, 'something_new', 'unauthenticated'],
 		[502, 'something_new', 'unavailable'],
 		[418, 'something_new', 'unexpected'],

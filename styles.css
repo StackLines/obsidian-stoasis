@@ -7,3 +7,7 @@
 .stoasis-disclosure {
 	color: var(--text-muted);
 }
+
+.stoasis-error {
+	color: var(--text-error);
+}

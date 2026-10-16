@@ -189,7 +189,8 @@ export class StoasisSettingTab extends PluginSettingTab {
 			text:
 				'This plugin needs an account on a compatible server. ' +
 				'It only contacts the server you pair it with, and sends note ' +
-				'content only for the folder you choose to sync. ' +
+				'content only for the folder you choose to sync, and for a note ' +
+				'you tag with "Tag this note now", which the server does not keep. ' +
 				'The device key from pairing is kept in this vault\'s plugin data; ' +
 				'it can reach your notes and nothing else on the server. ' +
 				'There is no telemetry and no self-update.',

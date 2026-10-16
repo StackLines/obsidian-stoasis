@@ -206,6 +206,9 @@ export class TAbstractFile {
 	}
 }
 export class TFile extends TAbstractFile {
+	get basename(): string {
+		return this.name.replace(/\.[^.]*$/, '');
+	}
 	get extension(): string {
 		return this.path.split('.').pop() ?? '';
 	}
@@ -335,15 +338,129 @@ export class Vault {
 }
 
 export class FileManager {
-	constructor(private readonly vault: Vault) {}
+	/** Thrown from processFrontMatter when set, like the app does for YAML it cannot parse. */
+	frontmatterError: Error | null = null;
+	constructor(
+		private readonly vault: Vault,
+		private readonly cache: MetadataCache,
+	) {}
 	trashFile(file: TAbstractFile): Promise<void> {
 		return this.vault.delete(file);
+	}
+	/**
+	 * Hands over the note's frontmatter, then writes it back as the app would:
+	 * `key: value` lines, lists as `- item` lines, in the object's key order.
+	 */
+	async processFrontMatter(file: TFile, fn: (frontmatter: Record<string, unknown>) => void): Promise<void> {
+		if (this.frontmatterError !== null) {
+			throw this.frontmatterError;
+		}
+		await this.vault.process(file, (text) => {
+			const { frontmatter, body } = splitFrontmatter(text);
+			fn(frontmatter);
+			const yaml = Object.entries(frontmatter)
+				.map(([key, value]) =>
+					Array.isArray(value)
+						? `${key}:\n${value.map((item) => `  - ${String(item)}`).join('\n')}`
+						: `${key}: ${String(value)}`,
+				)
+				.join('\n');
+			return yaml === '' ? body : `---\n${yaml}\n---\n${body}`;
+		});
+		this.cache.parse(file.path, this.vault.files.get(file.path) ?? '');
+	}
+}
+
+/** Reads the simple frontmatter the stub writes: `key: value` and `- item` lines. */
+export function splitFrontmatter(text: string): { frontmatter: Record<string, unknown>; body: string } {
+	const match = /^---\n([\s\S]*?)\n?---\n/.exec(text);
+	if (match === null) {
+		return { frontmatter: {}, body: text };
+	}
+	const frontmatter: Record<string, unknown> = {};
+	let list: unknown[] | null = null;
+	for (const line of (match[1] ?? '').split('\n')) {
+		const item = /^\s+- (.*)$/.exec(line);
+		if (item !== null && list !== null) {
+			list.push(item[1]);
+			continue;
+		}
+		const pair = /^([^:]+):\s*(.*)$/.exec(line);
+		if (pair !== null) {
+			const key = pair[1] ?? '';
+			if (pair[2] === '') {
+				list = [];
+				frontmatter[key] = list;
+			} else {
+				list = null;
+				frontmatter[key] = pair[2];
+			}
+		}
+	}
+	return { frontmatter, body: text.slice(match[0].length) };
+}
+
+export class MetadataCache {
+	private readonly frontmatter = new Map<string, Record<string, unknown>>();
+	getFileCache(file: TFile): { frontmatter?: Record<string, unknown> } | null {
+		const frontmatter = this.frontmatter.get(file.path);
+		return frontmatter === undefined ? {} : { frontmatter };
+	}
+	/** What the app's indexer does when a note changes. */
+	parse(path: string, text: string): void {
+		const { frontmatter } = splitFrontmatter(text);
+		if (Object.keys(frontmatter).length === 0) {
+			this.frontmatter.delete(path);
+		} else {
+			this.frontmatter.set(path, frontmatter);
+		}
+	}
+}
+
+export class MenuItem {
+	title = '';
+	icon = '';
+	private clickHandler: (() => unknown) | null = null;
+	setTitle(title: string): this {
+		this.title = title;
+		return this;
+	}
+	setIcon(icon: string): this {
+		this.icon = icon;
+		return this;
+	}
+	onClick(handler: () => unknown): this {
+		this.clickHandler = handler;
+		return this;
+	}
+	async click(): Promise<void> {
+		await this.clickHandler?.();
+	}
+}
+
+export class Menu {
+	items: MenuItem[] = [];
+	addItem(build: (item: MenuItem) => unknown): this {
+		const item = new MenuItem();
+		this.items.push(item);
+		build(item);
+		return this;
 	}
 }
 
 export class Workspace {
 	private readyCallbacks: Array<() => void> = [];
+	private readonly listeners = new Map<string, Listener[]>();
 	layoutReady = false;
+	on(name: string, listener: Listener): { name: string; listener: Listener } {
+		this.listeners.set(name, [...(this.listeners.get(name) ?? []), listener]);
+		return { name, listener };
+	}
+	trigger(name: string, ...args: unknown[]): void {
+		for (const listener of this.listeners.get(name) ?? []) {
+			listener(...args);
+		}
+	}
 	onLayoutReady(callback: () => void): void {
 		if (this.layoutReady) {
 			callback();
@@ -361,7 +478,8 @@ export class Workspace {
 
 export class App {
 	vault = new Vault();
-	fileManager = new FileManager(this.vault);
+	metadataCache = new MetadataCache();
+	fileManager = new FileManager(this.vault, this.metadataCache);
 	workspace = new Workspace();
 }
 
@@ -375,6 +493,7 @@ export class Plugin {
 	statusItems: ContainerEl[] = [];
 	protocolHandlers = new Map<string, ProtocolHandler>();
 	settingTabs: unknown[] = [];
+	commands: Array<{ id: string; name: string; editorCheckCallback?: (...args: never[]) => boolean | void }> = [];
 	editorExtensions: unknown[] = [];
 	events: Array<{ name: string; listener: Listener }> = [];
 	saved: unknown[] = [];
@@ -388,6 +507,10 @@ export class Plugin {
 		const item = new ContainerEl();
 		this.statusItems.push(item);
 		return item;
+	}
+	addCommand<T extends { id: string; name: string }>(command: T): T {
+		this.commands.push(command);
+		return command;
 	}
 	addSettingTab(tab: unknown): void {
 		this.settingTabs.push(tab);

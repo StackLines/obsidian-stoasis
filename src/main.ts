@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder } from 'obsidian';
+import { Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, type Editor } from 'obsidian';
 import { ApiError, NotesApi } from './api';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
@@ -34,6 +34,9 @@ import { HocuspocusDocSource, SyncAccessError, type SyncAccess } from './sync/ho
 import { indexedDbStores } from './sync/idb';
 import { checkCompatibility, describeIncompatibility } from './version';
 import { obsidianVault } from './vault';
+import { TagModal } from './tag-modal';
+import { applyToFrontmatter, propose, stampDate, tooLongToTag } from './tagging';
+import type { PropertyPatch } from './frontmatter-patch';
 
 /** How long to wait before saving after the sync state changed. */
 const SAVE_DELAY_MS = 2000;
@@ -91,6 +94,35 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			this.handlePairingLink(params);
 		});
 		this.registerEditorExtension(syncedEditors(this.editors));
+
+		this.addCommand({
+			id: 'tag-note-now',
+			name: 'Tag this note now',
+			editorCheckCallback: (checking, editor, info) => {
+				const file = info.file;
+				if (file === null || file.extension !== 'md') {
+					return false;
+				}
+				if (!checking) {
+					void this.tagNote(file, editor);
+				}
+				return true;
+			},
+		});
+		this.registerEvent(
+			this.app.workspace.on('editor-menu', (menu, editor, info) => {
+				const file = info.file;
+				if (file === null || file.extension !== 'md') {
+					return;
+				}
+				menu.addItem((item) =>
+					item
+						.setTitle('Tag this note now')
+						.setIcon('tags')
+						.onClick(() => void this.tagNote(file, editor)),
+				);
+			}),
+		);
 
 		this.app.workspace.onLayoutReady(() => {
 			if (this.unloaded) {
@@ -280,6 +312,61 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		} else {
 			await this.stopSync();
 		}
+	}
+
+	// Tag now.
+
+	/**
+	 * Asks the server for properties for the note's text and shows what would
+	 * change. Any note can be tagged, synced or not, once the device is paired.
+	 */
+	async tagNote(file: TFile, editor: Pick<Editor, 'getValue'>): Promise<void> {
+		if (getPairingState(this.settings) !== 'paired') {
+			new Notice('Pair this device with a server first, in the plugin settings.');
+			return;
+		}
+		const markdown = editor.getValue();
+		if (tooLongToTag(markdown)) {
+			new Notice('This note is too long to tag.');
+			return;
+		}
+		const asking = new Notice('Asking the server for properties…', 0);
+		let suggestion;
+		try {
+			suggestion = await new NotesApi(obsidianHttp, this.settings.serverUrl, this.settings.deviceKey).suggestProperties(
+				markdown,
+			);
+		} catch (error) {
+			new Notice(
+				error instanceof ApiError && error.kind === 'network'
+					? "Couldn't reach the server."
+					: describeApiError(error),
+			);
+			return;
+		} finally {
+			asking.hide();
+		}
+		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
+		const proposal = propose(frontmatter, suggestion, stampDate(new Date()));
+		const patch = proposal.patch;
+		new TagModal(this.app, file.basename, proposal, () =>
+			patch === null ? Promise.resolve(false) : this.applyTags(file, patch),
+		).open();
+	}
+
+	/** Writes the patch into the note's frontmatter as it is now. */
+	private async applyTags(file: TFile, patch: PropertyPatch): Promise<boolean> {
+		let changed = false;
+		try {
+			await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+				changed = applyToFrontmatter(frontmatter, patch, stampDate(new Date()));
+			});
+		} catch (error) {
+			new Notice(`Stoasis could not write the properties: ${error instanceof Error ? error.message : String(error)}`);
+			return false;
+		}
+		new Notice(changed ? `Tagged "${file.basename}".` : 'Nothing to add: the note already has these properties.');
+		return true;
 	}
 
 	// Pairing.

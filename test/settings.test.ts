@@ -311,6 +311,7 @@ describe('settings tab', () => {
 			expect(all[heading + 1]).toMatchObject({ kind: 'element', tag: 'p', cls: 'stoasis-disclosure' });
 			expect(text).toContain('needs an account on a compatible server');
 			expect(text).toContain('only contacts the server you pair it with');
+			expect(text).toContain('a note you tag with "Tag this note now", which the server does not keep');
 			expect(text).toContain('no telemetry and no self-update');
 		}
 	});

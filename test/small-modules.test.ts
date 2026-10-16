@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { folderNameFor, freeFolderName } from '../src/folder-name';
 import { DownloadProgress, type DownloadState, type ProgressNotice } from '../src/progress';
 import { describeStatus, explainStatus, type SyncSnapshot } from '../src/status';
-import { applyPropertyPatch, FakePropertySuggester, tagNow } from '../src/tagging';
 import {
 	conflictPath,
 	fingerprint,
@@ -174,47 +173,6 @@ describe('folder names', () => {
 		const taken = new Set(['Personal', 'Personal 2']);
 		expect(freeFolderName('Personal', (p) => !taken.has(p))).toBe('Personal 3');
 		expect(freeFolderName('Work', (p) => !taken.has(p))).toBe('Work');
-	});
-});
-
-describe('tag now', () => {
-	it('adds suggested tags to the ones already there', () => {
-		const frontmatter: Record<string, unknown> = { tags: ['work'], title: 'Mine' };
-		expect(applyPropertyPatch(frontmatter, { tags: ['work', 'plans'], title: 'Theirs', status: 'draft' })).toEqual([
-			'tags',
-			'status',
-		]);
-		expect(frontmatter).toEqual({ tags: ['work', 'plans'], title: 'Mine', status: 'draft' });
-	});
-
-	it('reads tags written as a string', () => {
-		const frontmatter: Record<string, unknown> = { tags: '#a, b' };
-		applyPropertyPatch(frontmatter, { tags: ['c'] });
-		expect(frontmatter['tags']).toEqual(['a', 'b', 'c']);
-	});
-
-	it('suggests with the stand-in and writes through the frontmatter writer', async () => {
-		const suggester = new FakePropertySuggester();
-		const written: Record<string, unknown>[] = [];
-		const changed = await tagNow('Note.md', 'Plans for #Garden and #2024 #home/repairs', suggester, (_path, update) => {
-			const frontmatter: Record<string, unknown> = {};
-			update(frontmatter);
-			written.push(frontmatter);
-			return Promise.resolve();
-		});
-		expect(changed).toEqual(['tags']);
-		expect(written).toEqual([{ tags: ['garden', 'home/repairs'] }]);
-		expect(suggester.requests).toHaveLength(1);
-	});
-
-	it('writes nothing when there is nothing to suggest', async () => {
-		let writes = 0;
-		const changed = await tagNow('Note.md', 'plain text', new FakePropertySuggester(), () => {
-			writes++;
-			return Promise.resolve();
-		});
-		expect(changed).toEqual([]);
-		expect(writes).toBe(0);
 	});
 });
 
