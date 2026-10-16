@@ -91,10 +91,12 @@ export interface NoteLink {
 	readonly text: Y.Text;
 	/**
 	 * Merges the editor's text, which may predate remote changes, into the
-	 * note. Refuses, and reports it, when that would replace most of the
-	 * note's text.
+	 * note. `loaded` is the file's text the app last loaded into the editor,
+	 * when known: the merge starts from the state the file had then, so text
+	 * that reached the file after the load is not taken as deleted. Refuses,
+	 * and reports it, when that would replace most of the note's text.
 	 */
-	adopt(editorText: string): void;
+	adopt(editorText: string, loaded?: string | null): void;
 	/**
 	 * Whether `text` is this note's file as this device knows it: on disk
 	 * when linked, as last synced, or as the note holds it now.
@@ -114,6 +116,8 @@ interface Note {
 	text: Y.Text;
 	/** State matching the text on disk, to merge disk edits against. */
 	base: MergeBase | null;
+	/** The few bases before it, newest first, for an editor loaded from an older file. */
+	earlier: MergeBase[];
 	/**
 	 * Changed on this device since the server last confirmed the note while
 	 * the space still listed it. Kept across restarts.
@@ -129,6 +133,8 @@ interface Note {
 const ENGINE = Symbol('stoasis-engine');
 const BASE_KEY = 'base';
 const DIRTY_KEY = 'dirty';
+/** How many earlier bases a note keeps in memory. */
+const EARLIER_BASES = 4;
 /** Kept with the space document once it holds the server's index. */
 const SEEDED_KEY = 'seeded';
 /**
@@ -395,19 +401,20 @@ export class SyncEngine {
 		let released = false;
 		return {
 			text: note.text,
-			adopt: (editorText) => {
+			adopt: (editorText, loaded) => {
 				const current = note.text.toJSON();
 				if (editorText === current) {
 					return;
 				}
-				if (note.base === null && current !== '' && editorText !== '') {
+				const base = this.baseFor(note, loaded);
+				if (base === null && current !== '' && editorText !== '') {
 					// Nothing on this device says how the two relate: show the
 					// note's text, and keep the editor's as a note of its own.
 					const at = this.relOf(note.id) ?? rel ?? 'Untitled.md';
 					void this.enqueue(() => this.keepCopy(at, editorText));
 					return;
 				}
-				if (replacesMost(current, this.mergedText(note, editorText))) {
+				if (replacesMost(current, this.mergedText(note, editorText, base))) {
 					// Nobody typed this: an editor that still shows another
 					// note's text must not replace this one. Show the note's.
 					this.options.onProblem?.(
@@ -415,7 +422,11 @@ export class SyncEngine {
 					);
 					return;
 				}
-				this.mergeDisk(note, editorText, false);
+				if (base === note.base) {
+					this.mergeDisk(note, editorText, false);
+				} else if (base !== null) {
+					mergeOutsideEdit(note.open.doc, NOTE_FIELD, base, editorText, ENGINE);
+				}
 			},
 			owns: (text) => text === disk || text === note.base?.text || text === note.text.toJSON(),
 			release: () => {
@@ -543,14 +554,25 @@ export class SyncEngine {
 		}
 	}
 
+	/**
+	 * The base to merge an editor's text against: the one matching the file's
+	 * text the editor loaded, else the current one.
+	 */
+	private baseFor(note: Note, loaded: string | null | undefined): MergeBase | null {
+		if (loaded === null || loaded === undefined || note.base === null || note.base.text === loaded) {
+			return note.base;
+		}
+		return note.earlier.find((base) => base.text === loaded) ?? note.base;
+	}
+
 	/** The text the note would hold after merging `text` as an outside edit. */
-	private mergedText(note: Note, text: string): string {
-		if (note.base === null || note.text.toJSON() === note.base.text) {
+	private mergedText(note: Note, text: string, base = note.base): string {
+		if (base === null || note.text.toJSON() === base.text) {
 			return text;
 		}
 		const scratch = new Y.Doc();
 		Y.applyUpdate(scratch, Y.encodeStateAsUpdate(note.open.doc));
-		mergeOutsideEdit(scratch, NOTE_FIELD, note.base, text, ENGINE);
+		mergeOutsideEdit(scratch, NOTE_FIELD, base, text, ENGINE);
 		const merged = scratch.getText(NOTE_FIELD).toJSON();
 		scratch.destroy();
 		return merged;
@@ -971,6 +993,7 @@ export class SyncEngine {
 			open,
 			text,
 			base: null,
+			earlier: [],
 			dirty: false,
 			editors: 0,
 			writeTimer: null,
@@ -1037,6 +1060,9 @@ export class SyncEngine {
 	}
 
 	private keepBase(note: Note, base: MergeBase): void {
+		if (note.base !== null && note.base.text !== base.text) {
+			note.earlier = [note.base, ...note.earlier.filter((b) => b.text !== base.text)].slice(0, EARLIER_BASES);
+		}
 		note.base = base;
 		void note.open.store.set(BASE_KEY, base.update);
 	}

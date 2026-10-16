@@ -175,7 +175,7 @@ describe('editor binding', () => {
 		const { editor, ytext } = await setup('');
 		expect(editor.handle?.bound).toBe(true);
 		editor.state = EditorState.create({ doc: 'loaded' });
-		editor.handle?.loaded();
+		editor.handle?.loaded('loaded');
 		await tick();
 		expect(editor.handle?.bound).toBe(false);
 		expect(ytext.toJSON()).toBe('');

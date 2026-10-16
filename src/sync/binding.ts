@@ -21,11 +21,13 @@ class Binding {
 	/**
 	 * `claim` is the text the editor held when it last showed a file it was
 	 * not linked for, or null when its text is known to be this file's.
+	 * `loaded` is the file's text the app last loaded into it, when known.
 	 */
 	constructor(
 		private readonly link: NoteLink,
 		private readonly port: EditorPort,
 		claim: string | null,
+		loaded: string | null,
 	) {
 		// The editor may show text from before remote changes arrived, or edits
 		// made while the note was loading: merge it in, then show the result.
@@ -33,7 +35,7 @@ class Binding {
 		// previous file's: merge it only if it started out as this note's.
 		// Otherwise the note's text wins and replaces it.
 		if (claim === null || link.owns(claim)) {
-			link.adopt(port.text());
+			link.adopt(port.text(), loaded);
 		}
 		const edits = diffText(port.text(), link.text.toJSON());
 		if (edits.length > 0) {
@@ -186,6 +188,8 @@ export class EditorHandle {
 	 * file's.
 	 */
 	private claim: string | null;
+	/** The text the app loaded into the editor while it showed `path`, until linked. */
+	private loadedText: string | null = null;
 	private holding = false;
 
 	constructor(
@@ -221,6 +225,7 @@ export class EditorHandle {
 		this.path = path;
 		// The text may still be the previous file's until the new one loads.
 		this.claim = this.port.text();
+		this.loadedText = null;
 		this.owner.released(old);
 		this.owner.consider(this);
 	}
@@ -229,11 +234,13 @@ export class EditorHandle {
 	 * The app replaced the editor's whole text, by loading a file rather than
 	 * by typing. If the editor is about to show another file, that file was
 	 * loaded, so the text goes to no note yet: the editor stays unlinked until
-	 * its next update shows which file it belongs to.
+	 * its next update shows which file it belongs to. `text` is what was
+	 * loaded.
 	 */
-	loaded(): void {
+	loaded(text: string): void {
 		this.unbind();
 		this.holding = true;
+		this.loadedText = text;
 	}
 
 	/**
@@ -274,8 +281,9 @@ export class EditorHandle {
 				}
 				this.linking = false;
 				if (link !== null) {
-					this.binding = new Binding(link, this.port, this.claim);
+					this.binding = new Binding(link, this.port, this.claim, this.loadedText);
 					this.claim = null;
+					this.loadedText = null;
 				}
 			},
 			() => {
