@@ -55,7 +55,8 @@ export function obsidianVault(app: App): VaultAdapter {
 
 /** What the folder warnings read, through the app's file system adapter. */
 export function folderProbe(app: App): FolderProbe {
-	// Both adapters have full paths; the mobile one only since 1.7.2.
+	// Both adapters have full paths; the mobile one only since 1.7.2, so on an
+	// older mobile app the checks that need them are skipped.
 	const adapter = app.vault.adapter as App['vault']['adapter'] & { getFullPath?: (path: string) => string };
 	return {
 		configDir: app.vault.configDir,

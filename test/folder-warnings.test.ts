@@ -50,7 +50,6 @@ describe('folder warnings', () => {
 
 	it("reads where new attachments go from Obsidian's setting", () => {
 		// Not set: the vault root.
-		expect(attachmentsOutside(null, 'Notes')).toBe('/');
 		expect(attachmentsOutside('{}', 'Notes')).toBe('/');
 		expect(attachmentsOutside('{"attachmentFolderPath":"/"}', 'Notes')).toBe('/');
 		expect(attachmentsOutside('{"attachmentFolderPath":"Files"}', 'Notes')).toBe('Files');
@@ -61,6 +60,20 @@ describe('folder warnings', () => {
 		expect(attachmentsOutside('{"attachmentFolderPath":"Notes"}', 'Notes')).toBeNull();
 		expect(attachmentsOutside('{"attachmentFolderPath":"Notes/Files"}', 'Notes')).toBeNull();
 		expect(attachmentsOutside('{"attachmentFolderPath":"Work/Files"}', 'Work/Notes')).toBe('Work/Files');
+		// Settings it could not read, or not an object: nothing to say.
+		expect(attachmentsOutside(null, 'Notes')).toBeNull();
+		expect(attachmentsOutside('{"attachmentFolder', 'Notes')).toBeNull();
+		expect(attachmentsOutside('[]', 'Notes')).toBeNull();
+	});
+
+	it('warns about attachments in the vault root only when the settings say so or there are none', async () => {
+		const attachments = async (files: Record<string, string>, folders: string[] = []) =>
+			(await checkFolder(probe(null, files, folders), 'Notes')).attachments;
+		// A new vault without app.json: the default, the vault root.
+		expect(await attachments({})).toBe('/');
+		// There, but it could not be read, or does not parse: no claim.
+		expect(await attachments({}, ['.obsidian/app.json'])).toBeNull();
+		expect(await attachments({ '.obsidian/app.json': '{"attachmentFolderPath":' })).toBeNull();
 	});
 
 	it('finds nothing for a plain folder with attachments next to the notes', async () => {
@@ -98,16 +111,18 @@ describe('folder warnings', () => {
 
 	it('says what to do about each', () => {
 		expect(describeRisk('icloud', 'Notes', null)).toBe(
-			'"Notes" is in iCloud Drive, which syncs it too. The two can undo each other\'s changes or make ' +
-				'duplicates; keep the vault out of iCloud Drive to sync it with Stoasis.',
+			'"Notes" seems to be in iCloud Drive, which may sync it too. The two can undo each other\'s changes ' +
+				'or make duplicates; keep the vault out of iCloud Drive to sync it with Stoasis.',
 		);
 		expect(describeRisk('attachments', 'Notes', 'Files')).toBe(
 			'New attachments go to "Files", outside "Notes". Stoasis does not sync attachments yet; when it ' +
 				'does, it will sync only those inside the folder. To keep them with the notes, set "Default ' +
 				'location for new attachments" in Files and links to the folder or next to the note.',
 		);
-		for (const risk of ['dropbox', 'obsidian-sync', 'git'] as const) {
+		for (const risk of ['icloud', 'dropbox', 'obsidian-sync', 'git'] as const) {
 			expect(describeRisk(risk, 'Notes', null)).toContain('"Notes"');
+			// Guessed from names and settings.
+			expect(describeRisk(risk, 'Notes', null)).toMatch(/\bmay\b/);
 		}
 	});
 

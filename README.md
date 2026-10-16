@@ -208,13 +208,19 @@ differences again. A copy that changed while the note got its text is kept.
 When sync starts, the plugin checks the synced folder on the device, without
 sending anything, and warns once for each folder when:
 
-- the vault is in iCloud Drive or Dropbox, or Obsidian Sync is on, so another
-  tool syncs the same files;
-- the folder is in a git working tree, where a pull or checkout changes notes
-  and those changes sync like edits;
+- the vault seems to be in iCloud Drive or Dropbox, or Obsidian Sync is turned
+  on, so another tool may sync the same files;
+- the folder may be in a git working tree (a `.git` folder in the vault, or
+  the Git community plugin), where a pull or checkout changes notes and those
+  changes sync like edits;
 - new attachments go outside the folder (Obsidian's **Default location for
   new attachments**). Attachments do not sync yet; when they do, only those
-  inside the folder will.
+  inside the folder will. When the plugin cannot read that setting, it says
+  nothing.
+
+The checks are guesses from folder names and settings. They miss a git working
+tree whose `.git` folder is above the vault, and iCloud Drive or Dropbox on a
+mobile app older than 1.7.2.
 
 ### Renaming
 
