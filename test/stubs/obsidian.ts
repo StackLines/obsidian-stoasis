@@ -232,10 +232,34 @@ export class TFolder extends TAbstractFile {
 
 type Listener = (...args: unknown[]) => void;
 
+/** The file system under the vault, which also holds what the vault does not list. */
+export class DataAdapter {
+	/** Files the vault does not list, such as its configuration. */
+	readonly hidden = new Map<string, string>();
+	/** Where the vault is on the device; null where the app does not tell. */
+	basePath: string | null = '/home/user/Vault';
+	constructor(private readonly vault: Vault) {}
+	getFullPath(path: string): string {
+		if (this.basePath === null) {
+			throw new Error('No full paths here');
+		}
+		return `${this.basePath}/${path}`;
+	}
+	exists(path: string): Promise<boolean> {
+		const all = [...this.hidden.keys(), ...this.vault.files.keys(), ...this.vault.folders];
+		return Promise.resolve(all.some((p) => p === path || p.startsWith(`${path}/`)));
+	}
+	read(path: string): Promise<string> {
+		const text = this.hidden.get(path) ?? this.vault.files.get(path);
+		return text === undefined ? Promise.reject(new Error(`No file ${path}`)) : Promise.resolve(text);
+	}
+}
+
 export class Vault {
 	configDir = '.obsidian';
 	readonly files = new Map<string, string>();
 	readonly folders = new Set<string>();
+	readonly adapter: DataAdapter = new DataAdapter(this);
 	private readonly listeners = new Map<string, Set<Listener>>();
 
 	on(name: string, listener: Listener): { name: string; listener: Listener } {

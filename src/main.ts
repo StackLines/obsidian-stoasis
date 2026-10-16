@@ -33,7 +33,8 @@ import { emptyEngineState, SyncEngine } from './sync/engine';
 import { HocuspocusDocSource, SyncAccessError, type SyncAccess } from './sync/hocuspocus';
 import { indexedDbStores } from './sync/idb';
 import { checkCompatibility, describeIncompatibility } from './version';
-import { obsidianVault } from './vault';
+import { folderProbe, obsidianVault } from './vault';
+import { checkFolder, describeRisk, warningKey } from './folder-warnings';
 import { TagModal } from './tag-modal';
 import { applyToFrontmatter, propose, stampDate, tooLongToTag } from './tagging';
 import type { PropertyPatch } from './frontmatter-patch';
@@ -489,8 +490,9 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	private forgetPairing(): void {
-		const { installId, folder, pendingRevocations } = this.settings;
-		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder, pendingRevocations };
+		// Which folder warnings were shown is about this device, not the pairing.
+		const { installId, folder, pendingRevocations, folderWarnings } = this.settings;
+		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder, pendingRevocations, folderWarnings };
 		this.incompatibility = '';
 	}
 
@@ -600,6 +602,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		source.onChange(() => this.updateStatus());
 		source.start();
 		this.updateStatus();
+		void this.warnAboutFolder(settings.folder);
 		// Not awaited: the first start can wait for the server indefinitely, and
 		// stopping, disconnecting or choosing another folder must not wait for it.
 		void engine
@@ -613,6 +616,29 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			.catch((error: unknown) => {
 				new Notice(`Stoasis could not start sync: ${error instanceof Error ? error.message : String(error)}`);
 			});
+	}
+
+	/**
+	 * Warns, once for each folder, when something else also syncs or changes
+	 * the synced folder, or keeps new attachments outside it.
+	 */
+	async warnAboutFolder(folder: string): Promise<void> {
+		let check;
+		try {
+			check = await checkFolder(folderProbe(this.app), folder);
+		} catch {
+			// A warning is a nicety; sync goes on without it.
+			return;
+		}
+		const fresh = check.risks.filter((risk) => !this.settings.folderWarnings.includes(warningKey(folder, risk)));
+		if (fresh.length === 0 || this.unloaded || this.settings.folder !== folder) {
+			return;
+		}
+		for (const risk of fresh) {
+			new Notice(describeRisk(risk, folder, check.attachments), 0);
+			this.settings.folderWarnings.push(warningKey(folder, risk));
+		}
+		await this.saveSettings();
 	}
 
 	private async stopSession(): Promise<void> {

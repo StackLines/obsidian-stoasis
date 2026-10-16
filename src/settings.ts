@@ -26,6 +26,8 @@ export interface StoasisSettings {
 	sync: EngineState;
 	/** Keys the server could not be told to revoke on disconnecting; retried. */
 	pendingRevocations: PendingRevocation[];
+	/** Folder warnings already shown, as `warningKey` makes them. */
+	folderWarnings: string[];
 }
 
 export interface PendingRevocation {
@@ -47,6 +49,7 @@ export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
 	installId: '',
 	sync: emptyEngineState(),
 	pendingRevocations: [],
+	folderWarnings: [],
 };
 
 const STRING_FIELDS = [
@@ -67,7 +70,12 @@ const STRING_FIELDS = [
  * plugin.
  */
 export function parseSettings(data: unknown): StoasisSettings {
-	const settings: StoasisSettings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), pendingRevocations: [] };
+	const settings: StoasisSettings = {
+		...DEFAULT_SETTINGS,
+		sync: emptyEngineState(),
+		pendingRevocations: [],
+		folderWarnings: [],
+	};
 	if (typeof data !== 'object' || data === null) {
 		return settings;
 	}
@@ -80,6 +88,10 @@ export function parseSettings(data: unknown): StoasisSettings {
 	}
 	settings.syncEnabled = stored['syncEnabled'] === true;
 	settings.sync = parseEngineState(stored['sync']);
+	const warnings = stored['folderWarnings'];
+	if (Array.isArray(warnings)) {
+		settings.folderWarnings = [...new Set((warnings as unknown[]).filter((w): w is string => typeof w === 'string'))];
+	}
 	const list = stored['pendingRevocations'];
 	// Version 0.1.0 before its release kept one key, as `pendingRevocation`.
 	const values: unknown[] = Array.isArray(list) ? [...(list as unknown[])] : [];
