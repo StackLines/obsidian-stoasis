@@ -541,6 +541,63 @@ describe('notes whose names differ only in letter case', () => {
 		]);
 	});
 
+	it('downloads the skipped note once the note here is renamed on this device', async () => {
+		const [hub, a, b] = await pair();
+		b.vault.ignoresCase = true;
+		a.vault.write('Synced/A.md', 'upper');
+		await settle(a, b);
+		a.vault.write('Synced/a.md', 'lower');
+		await settle(a, b);
+		expect(b.files()).toEqual({ 'Synced/A.md': 'upper' });
+		expect(b.engine.progress()).toEqual({ listed: 1, present: 1 });
+
+		b.vault.move('Synced/A.md', 'Synced/Resolved.md');
+		await settle(a, b);
+		expect(b.files()).toEqual({ 'Synced/Resolved.md': 'upper', 'Synced/a.md': 'lower' });
+		expect(a.files()).toEqual({ 'Synced/Resolved.md': 'upper', 'Synced/a.md': 'lower' });
+		expect(Object.keys(index(hub)).sort()).toEqual(['Resolved.md', 'a.md']);
+		expect(b.engine.progress()).toEqual({ listed: 2, present: 2 });
+		expect(b.problems).toHaveLength(1);
+
+		// A new clash later is reported again.
+		a.vault.write('Synced/RESOLVED.md', 'shouting');
+		await settle(a, b);
+		expect(b.problems).toHaveLength(2);
+		expect(b.problems[1]).toContain('"RESOLVED.md" was not downloaded');
+	});
+
+	it('downloads the skipped note once the note here is deleted on this device', async () => {
+		const [, a, b] = await pair();
+		b.vault.ignoresCase = true;
+		a.vault.write('Synced/A.md', 'upper');
+		await settle(a, b);
+		a.vault.write('Synced/a.md', 'lower');
+		await settle(a, b);
+		b.vault.remove('Synced/A.md');
+		await settle(a, b);
+		expect(b.files()).toEqual({ 'Synced/a.md': 'lower' });
+		expect(b.engine.progress()).toEqual({ listed: 1, present: 1 });
+	});
+
+	it('downloads the skipped note once a file of its own here is renamed', async () => {
+		const hub = new MemoryHub();
+		const a = new Device(hub);
+		await a.start();
+		a.vault.write('Synced/A.md', 'from a');
+		await settle(a);
+		const b = new Device(hub);
+		b.vault.ignoresCase = true;
+		b.vault.files.set('Synced/a.md', 'only on b');
+		await b.start();
+		await settle(a, b);
+		expect(b.files()).toEqual({ 'Synced/a.md': 'only on b' });
+
+		b.vault.move('Synced/a.md', 'Synced/b.md');
+		await settle(a, b);
+		expect(b.files()).toEqual({ 'Synced/A.md': 'from a', 'Synced/b.md': 'only on b' });
+		expect(Object.keys(index(hub)).sort()).toEqual(['A.md', 'b.md']);
+	});
+
 	it('creates both where the file system tells them apart', async () => {
 		const [, a, b] = await pair();
 		a.vault.write('Synced/A.md', 'upper');

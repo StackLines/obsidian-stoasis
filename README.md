@@ -234,7 +234,7 @@ made on desktop Linux, cannot both be on a device whose file system ignores
 case; nor can notes in two folders named that way. Such a device keeps the one
 it has, skips the other with a warning, and syncs every other note. The
 skipped note stays on your server and your other devices, and arrives once one
-of the two is renamed.
+of the two is renamed or deleted, on any device.
 
 ## Tagging
 

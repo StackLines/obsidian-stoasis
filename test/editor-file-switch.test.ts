@@ -1269,4 +1269,24 @@ describe('a case-only rename while the note is open', () => {
 		paneA.close();
 		paneB.close();
 	});
+
+	it('downloads a note skipped for a case clash once the open note here is renamed', async () => {
+		const { hub, a, b, paneA, paneB, index } = await withPanes();
+		a.vault.ignoresCase = false;
+		a.vault.write(CASE_ONLY, 'Lower-case distinct note.\n');
+		await settle(a, b);
+		expect(b.vault.files.has(CASE_ONLY)).toBe(false);
+		expect(b.problems).toHaveLength(1);
+
+		b.vault.move(NOTE, 'Notes/Resolved.md');
+		await settle(a, b);
+		expect(b.vault.files.get(CASE_ONLY)).toBe('Lower-case distinct note.\n');
+		expect(b.vault.files.get('Notes/Resolved.md')).toBe(ORIGINAL[NOTE]);
+		expect(hub.text(noteDocName(index()['a.md']!.id))).toBe('Lower-case distinct note.\n');
+		expect(paneB.file).toBe('Notes/Resolved.md');
+		expect(paneB.text()).toBe(ORIGINAL[NOTE]);
+		expect(b.problems).toHaveLength(1);
+		paneA.close();
+		paneB.close();
+	});
 });
