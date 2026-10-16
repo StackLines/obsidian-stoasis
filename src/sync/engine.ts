@@ -364,7 +364,10 @@ export class SyncEngine {
 	fileDeleted(path: string): void {
 		const rel = this.relative(path);
 		if (rel !== null) {
-			void this.enqueue(() => this.diskDeleted(rel));
+			void this.enqueue(async () => {
+				await this.diskDeleted(rel);
+				await this.retryClashes();
+			});
 		}
 	}
 
@@ -388,6 +391,7 @@ export class SyncEngine {
 			} else if (from !== null && to !== null) {
 				this.diskRenamed(from, to);
 			}
+			await this.retryClashes();
 		});
 	}
 
@@ -887,7 +891,31 @@ export class SyncEngine {
 			cases.add(rel);
 			knownIds.add(id);
 		}
+		// A clash for a note the space no longer lists, or that is where it is listed now, is over.
+		const listedAt = new Map(this.entries().map(([rel, entry]) => [entry.id, rel]));
+		for (const id of [...this.clashes.keys()]) {
+			const rel = listedAt.get(id);
+			if (rel === undefined || known[rel] === id) {
+				this.clashes.delete(id);
+			}
+		}
+		const current = new Set(this.clashes.values());
+		for (const message of [...this.reportedClashes]) {
+			if (!current.has(message)) {
+				this.reportedClashes.delete(message);
+			}
+		}
 		this.save();
+	}
+
+	/**
+	 * After a file here was renamed or deleted: a note skipped for a name
+	 * clash may fit now, so the folder is brought in line again.
+	 */
+	private async retryClashes(): Promise<void> {
+		if (this.clashes.size > 0) {
+			await this.reconcile();
+		}
 	}
 
 	/**
