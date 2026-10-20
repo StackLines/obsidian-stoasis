@@ -19,7 +19,9 @@ The name joins *stoa*, the covered walkway where people met to think together, w
 
 > **Early development.** Version 0.2.0 is a preview that syncs. It
 > pairs with your server, keeps one folder in step with your personal
-> space, offline edits included, and tags a note when you ask. Sharing is
+> space, offline edits included, and tags a note when you ask. The next
+> version can also sync the whole vault and restore earlier versions of a
+> note. Sharing is
 > not available yet. See [Status](#status).
 
 ## What it is for
@@ -39,6 +41,9 @@ The name joins *stoa*, the covered walkway where people met to think together, w
 | Pairing with a compatible server, by link or by typed code | shipped |
 | Refusing to sync with a server that needs a newer plugin | shipped |
 | Live sync of one folder with your personal space | shipped |
+| Syncing the whole vault, with a guard against mass deletions | unreleased |
+| Note history: comparing an earlier version and restoring it | unreleased |
+| Space storage and scan progress in the Brain settings | unreleased |
 | Offline editing with merge on reconnect | shipped |
 | Edits made outside Obsidian merged with edits from other devices | shipped |
 | Comparing a conflict copy with its note and keeping one of them | shipped |
@@ -57,11 +62,13 @@ The name joins *stoa*, the covered walkway where people met to think together, w
   Without one the plugin does nothing useful.
 - **Network use.** The plugin only talks to the server address you pair it
   with: HTTPS requests for pairing, version checks, your space list,
-  short-lived sync tokens, tagging a note and the Brain settings, and one
-  WebSocket for live sync while sync is on. Before pairing it makes no
+  short-lived sync tokens, tagging a note, the Brain settings (including
+  your space's storage and the scanner's progress, read every minute while
+  the settings tab is open and scanning is on), a note's earlier versions when
+  you open **Note history**, and one WebSocket for live sync while sync is on. Before pairing it makes no
   network requests at all.
 - **Your note content is sent to that server** for the Markdown notes in the
-  folder you choose to sync, and for a note you tag with **Tag this note
+  folder (or the whole vault) you choose to sync, and for a note you tag with **Tag this note
   now**, which the server does not keep. Nothing is sent for other notes.
 - **No telemetry, no analytics, no ads and no self-update.** Updates arrive
   only through your normal plugin update channel.
@@ -251,6 +258,18 @@ it has, skips the other with a warning, and syncs every other note. The
 skipped note stays on your server and your other devices, and arrives once one
 of the two is renamed or deleted, on any device.
 
+### Note history
+
+Run **Note history** from the command palette or the editor menu of a synced
+note. It lists the note's earlier versions, newest first, with when each was
+saved, who or what made the change (you, an agent, the scanner) and its
+size. Choose **View** to see the lines that differ from the note now, then
+**Restore this version** to write it back. A restore is one ordinary edit
+that every device merges, so the text it replaces stays in the history. If
+the note changed while the window was open, the window shows the differences
+again instead of overwriting it. Versions are kept by the server and are as
+private as the note; a device only reads them when you open the window.
+
 ## Tagging
 
 Run **Tag this note now** from the command palette or the editor menu of a
@@ -320,8 +339,7 @@ What works today:
 - **Tag this note now**, for synced and unsynced notes, and the **Brain**
   settings. See [Tagging](#tagging) and [Brain settings](#brain-settings).
 
-What is next: note history with restoring an earlier version, then syncing
-attachments.
+What is next: syncing attachments.
 
 Not supported yet: live cursors, canvas files, attachments, a screen to review
 the scanner's suggestions, more than one synced folder and any sharing

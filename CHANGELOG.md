@@ -63,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   plugin does on its own: "Tag this note now" stays add-only. This is the first
   plugin version that passes the version 3 vectors, so it is the one a server
   should name as its minimum before it sends removals.
+- The README and the plugin's Network and privacy text now say what the
+  whole-vault sync, the note history, the storage figure and the scan
+  progress send and read.
+
 - The saved setting `folder` becomes `mapping`. An existing folder setting is
   read as a folder mapping, so no space is re-keyed.
 
