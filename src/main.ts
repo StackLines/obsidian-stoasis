@@ -11,6 +11,7 @@ import {
 	type Editor,
 } from 'obsidian';
 import { ApiError, NotesApi } from './api';
+import { HistoryModal } from './history-modal';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
 import { PairModal } from './pair-modal';
@@ -181,6 +182,20 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 				return true;
 			},
 		});
+		this.addCommand({
+			id: 'note-history',
+			name: 'Note history',
+			editorCheckCallback: (checking, _editor, info) => {
+				const file = info.file;
+				if (file === null || !this.syncedNote(file)) {
+					return false;
+				}
+				if (!checking) {
+					this.showHistory(file);
+				}
+				return true;
+			},
+		});
 		this.registerEvent(
 			this.app.workspace.on('editor-menu', (menu, editor, info) => {
 				const file = info.file;
@@ -193,6 +208,14 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 						.setIcon('tags')
 						.onClick(() => void this.tagNote(file, editor)),
 				);
+				if (this.syncedNote(file)) {
+					menu.addItem((item) =>
+						item
+							.setTitle('Note history')
+							.setIcon('history')
+							.onClick(() => this.showHistory(file)),
+					);
+				}
 				if (this.isConflictCopy(file)) {
 					menu.addItem((item) =>
 						item
@@ -493,6 +516,38 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	// Tag now.
 
 	/** Whether `file` is a copy kept in a conflict, with its note still next to it. */
+	private syncedNote(file: TFile): boolean {
+		return file.extension === 'md' && this.session?.engine.noteAt(file.path) !== undefined;
+	}
+
+	/** Opens the history of a synced note, to look at an earlier version or restore it. */
+	showHistory(file: TFile): void {
+		const engine = this.session?.engine;
+		const api = this.brainApi();
+		const id = engine?.noteAt(file.path);
+		if (engine === undefined || api === null || id === undefined) {
+			new Notice('This note is not synced, so it has no history.');
+			return;
+		}
+		const path = file.path;
+		const source = {
+			versions: (before: number | null) => api.noteVersions(id, before),
+			text: async (version: number) => (await api.noteVersion(id, version)).text,
+			current: async () => {
+				const text = await engine.noteText(path);
+				if (text === null || engine.noteAt(path) !== id) {
+					throw new Error('The note is not synced here any more.');
+				}
+				return text;
+			},
+			restore: (text: string, expected: string) =>
+				engine.noteAt(path) === id ? engine.restore(path, text, expected) : Promise.resolve(false),
+		};
+		new HistoryModal(this.app, file.name, source, (error) =>
+			error instanceof ApiError ? describeApiError(error) : error instanceof Error ? error.message : String(error),
+		).open();
+	}
+
 	private isConflictCopy(file: TFile): boolean {
 		const original = conflictOriginal(file.path);
 		return original !== null && this.app.vault.getAbstractFileByPath(original) instanceof TFile;

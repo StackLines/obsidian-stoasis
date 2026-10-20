@@ -47,6 +47,20 @@ export class FakeControlPlane {
 		};
 	}
 
+	/** Note id → saved versions, as the history endpoints serve them. */
+	versions = new Map<
+		string,
+		Array<{
+			version: number;
+			created_at: string;
+			actor_kind: string;
+			actor_label: string;
+			reason: string;
+			size: number;
+			text: string;
+		}>
+	>();
+
 	handle = (request: RequestUrlParam): RequestUrlResponse => {
 		const prefix = `${this.server}/notes/api`;
 		if (!request.url.startsWith(prefix)) {
@@ -80,6 +94,27 @@ export class FakeControlPlane {
 		}
 		if (method === 'POST' && path === '/sync-token') {
 			return json(200, { token: this.syncToken, expires_at: '2099-01-01T00:00:00Z' });
+		}
+		const history = /^\/notes\/([0-9a-f-]+)\/versions(?:\/(\d+))?(?:\?(.*))?$/.exec(path);
+		if (method === 'GET' && history !== null) {
+			const all = this.versions.get(history[1] ?? '');
+			if (all === undefined) {
+				return json(404, { error: 'not_found', message: 'No' });
+			}
+			if (history[2] !== undefined) {
+				const one = all.find((v) => v.version === Number(history[2]));
+				return one === undefined ? json(404, { error: 'not_found', message: 'No' }) : json(200, one);
+			}
+			const query = new URLSearchParams(history[3] ?? '');
+			const limit = Number(query.get('limit') ?? 50);
+			const before = query.has('before') ? Number(query.get('before')) : Infinity;
+			const older = [...all].filter((v) => v.version < before).sort((a, b) => b.version - a.version);
+			const page = older.slice(0, limit);
+			const last = page[page.length - 1];
+			return json(200, {
+				versions: page.map(({ text: _text, ...rest }) => rest),
+				next_before: older.length > limit && last !== undefined ? last.version : null,
+			});
 		}
 		if (method === 'GET' && path === '/spaces') {
 			return json(200, { spaces: this.spaces.map((space) => ({ ...space, usage: this.usage() })) });

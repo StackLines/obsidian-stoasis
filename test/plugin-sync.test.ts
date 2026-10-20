@@ -434,3 +434,54 @@ describe('plugin sync', () => {
 		}, 30_000);
 	});
 });
+
+describe('note history', () => {
+	const OLD = '# Plan\n\nFirst draft.\n';
+	const NEW = '# Plan\n\nSecond draft, rewritten.\n';
+
+	it('lists versions, compares one with the note now, and restores it on every device', async () => {
+		const a = await vaultDevice('ABCD2345', { 'Plan.md': OLD });
+		await eventually(() => expect(status(a.plugin)).toBe('Stoasis: synced'), 8000);
+		const b = await vaultDevice('EFGH2345', {}, 'confirm');
+		await eventually(() => expect(b.plugin.app.vault.files.get('Plan.md')).toBe(OLD), 8000);
+
+		const id = (a.plugin as unknown as { session: { engine: { noteAt(p: string): string } } }).session.engine.noteAt('Plan.md');
+		await a.plugin.app.vault.modify(new TFile('Plan.md'), NEW);
+		await eventually(() => expect(b.plugin.app.vault.files.get('Plan.md')).toBe(NEW), 8000);
+		const stamp = (n: number) => `2026-10-16T09:4${n}:00+00:00`;
+		control.versions.set(id, [
+			{ version: 1, created_at: stamp(1), actor_kind: 'person', actor_label: 'you', reason: 'idle', size: OLD.length, text: OLD },
+			{ version: 2, created_at: stamp(2), actor_kind: 'scanner', actor_label: 'Scanner', reason: 'scan', size: NEW.length, text: NEW },
+		]);
+
+		openedModals.length = 0;
+		a.plugin.showHistory(new TFile('Plan.md') as never);
+		const modal = openedModals[0] as unknown as { contentEl: ContainerEl };
+		const clicks = (label: string) =>
+			modal.contentEl.items.flatMap((i) => i.controls ?? []).filter((c) => c.label === label);
+		await eventually(() => expect(clicks('View').length).toBe(2));
+		const names = modal.contentEl.items.map((i) => i.name ?? '');
+		expect(names.findIndex((n) => n.includes('Scanner edit'))).toBeLessThan(names.findIndex((n) => n.includes(': Edit by you')));
+
+		// The older version is second in the list (newest first).
+		await clicks('View')[1]?.click();
+		const diffText = () =>
+			(modal.contentEl.items.find((i) => i.cls === 'stoasis-diff')?.children ?? []).map((i) => i.text);
+		await eventually(() => expect(diffText()).toContain('− First draft.'));
+		expect(diffText()).toContain('+ Second draft, rewritten.');
+
+		await clicks('Restore this version')[0]?.click();
+		await eventually(() => expect(a.plugin.app.vault.files.get('Plan.md')).toBe(OLD), 8000);
+		await eventually(() => expect(b.plugin.app.vault.files.get('Plan.md')).toBe(OLD), 8000);
+	}, 40_000);
+
+	it('shows a note that is not synced as having no history', async () => {
+		const a = await vaultDevice('ABCD2345', { 'Plan.md': OLD });
+		await eventually(() => expect(status(a.plugin)).toBe('Stoasis: synced'), 8000);
+		notices.length = 0;
+		openedModals.length = 0;
+		a.plugin.showHistory(new TFile('Missing.md') as never);
+		expect(openedModals.length).toBe(0);
+		expect(notices.join(' ')).toContain('not synced');
+	});
+});

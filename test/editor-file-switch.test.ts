@@ -1402,6 +1402,59 @@ describe('tagging a note while it is open', () => {
  * Keeping one side writes the note on disk while it may be open, and trashes
  * the copy, on this device; sync carries both to the other device.
  */
+describe('restoring an earlier version while the note is open', () => {
+	it('shows the restored text in both open editors, and keeps typing made before it merged', async () => {
+		const { hub, a, b } = await pair();
+		const earlier = ORIGINAL['Notes/A.md'] as string;
+		const paneA = new Pane(a.editors, a.vault, 'Notes/A.md');
+		const paneB = new Pane(b.editors, b.vault, 'Notes/A.md');
+		await settle(a, b);
+
+		// Both devices type; then a restore of the earlier text, as one edit.
+		paneA.type(paneA.text().length, '\nTyped on A.');
+		await settle(a, b);
+		const current = a.engine.noteText('Notes/A.md');
+		expect(await current).toContain('Typed on A.');
+		expect(await a.engine.restore('Notes/A.md', earlier, 'not what the note says')).toBe(false);
+		expect(paneA.text()).toContain('Typed on A.');
+		expect(await a.engine.restore('Notes/A.md', earlier, (await current) ?? '')).toBe(true);
+		await settle(a, b);
+		paneA.save();
+		paneB.save();
+		await settle(a, b);
+
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(hub.text(noteDocName(index['A.md']!.id))).toBe(earlier);
+		expect(paneA.text()).toBe(earlier);
+		expect(paneB.text()).toBe(earlier);
+		expect(a.vault.files.get('Notes/A.md')).toBe(earlier);
+		expect(b.vault.files.get('Notes/A.md')).toBe(earlier);
+		expect(a.problems).toEqual([]);
+		expect(b.problems).toEqual([]);
+
+		// Typing afterwards still reaches the other device once.
+		paneB.type(paneB.text().length, '\nAfter.');
+		await settle(a, b);
+		expect(paneA.text()).toBe(`${earlier}\nAfter.`);
+		paneA.close();
+		paneB.close();
+	});
+
+	it('writes the file of a note that is not open, on both devices', async () => {
+		const { a, b } = await pair();
+		const earlier = ORIGINAL['Notes/B.md'] as string;
+		await a.engine.restore('Notes/B.md', 'replaced entirely\n');
+		await settle(a, b);
+		expect(b.vault.files.get('Notes/B.md')).toBe('replaced entirely\n');
+		expect(a.vault.files.get('Notes/B.md')).toBe('replaced entirely\n');
+		expect(await a.engine.restore('Notes/B.md', earlier)).toBe(true);
+		await settle(a, b);
+		expect(b.vault.files.get('Notes/B.md')).toBe(earlier);
+		expect(await a.engine.restore('Notes/Missing.md', 'x')).toBe(false);
+		expect(a.problems).toEqual([]);
+	});
+});
+
 describe('keeping one side of a conflict copy while the note is open', () => {
 	const COPY = 'Notes/A (conflict 2026-10-16).md';
 	const COPY_TEXT = day(1, 'Write the summary', 'A quiet day, written on this device while it was offline.');
