@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
-import { emptyEngineState, parseEngineState, SyncEngine, type EngineState } from '../src/sync/engine';
+import { emptyEngineState, MASS_DELETE_MIN, parseEngineState, SyncEngine, type EngineState } from '../src/sync/engine';
 import { HocuspocusDocSource } from '../src/sync/hocuspocus';
 import {
 	folderMapping,
@@ -110,10 +110,13 @@ class Device {
 	source!: MemoryDocSource;
 	engine!: SyncEngine;
 	problems: string[] = [];
+	/** Counts of notes the engine held back from deleting, in order. */
+	held: number[] = [];
 
 	constructor(
 		private readonly hub: MemoryHub,
 		private readonly mapping: Mapping = WHOLE_VAULT,
+		private readonly configDir: string = CONFIG,
 	) {}
 
 	async start(): Promise<void> {
@@ -124,11 +127,13 @@ class Device {
 			source: this.source,
 			spaceId: SPACE_ID,
 			mapping: this.mapping,
-			configDir: CONFIG,
+			configDir: this.configDir,
 			state: this.state,
 			saveState: () => undefined,
 			writeDelayMs: 1,
+			deleteBatchMs: 1,
 			onProblem: (message) => this.problems.push(message),
+			onMassDelete: (count) => this.held.push(count),
 		});
 		this.vault.listener = this.engine;
 		await this.engine.start();
@@ -240,6 +245,112 @@ describe('SyncEngine mapped to the whole vault', () => {
 		await settle(a, b);
 		expect(a.files()).toEqual({ 'Keep.md': 'keep' });
 		expect(Object.keys(indexOf(hub))).toEqual(['Keep.md']);
+	});
+
+	describe('deleting many notes at once', () => {
+		const MANY = MASS_DELETE_MIN + 5;
+
+		async function vaultOf(extra = 0): Promise<[MemoryHub, Device, Device]> {
+			const [hub, a, b] = await pair();
+			for (let n = 0; n < MANY + extra; n++) {
+				a.vault.write(`Big/${n}.md`, `note ${n}`);
+			}
+			await settle(a, b);
+			expect(Object.keys(b.files())).toHaveLength(MANY + extra);
+			return [hub, a, b];
+		}
+
+		it('holds a folder of notes that vanishes, and deletes nothing until asked', async () => {
+			const [hub, a, b] = await vaultOf(5);
+			for (let n = 0; n < MANY; n++) {
+				a.vault.remove(`Big/${n}.md`);
+			}
+			await settle(a, b);
+			expect(a.held).toEqual([MANY]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(MANY + 5);
+			expect(Object.keys(b.files())).toHaveLength(MANY + 5);
+
+			a.engine.releaseHeld();
+			await settle(a, b);
+			expect(Object.keys(indexOf(hub))).toHaveLength(5);
+			expect(Object.keys(b.files())).toHaveLength(5);
+		});
+
+		it('holds notes missing at startup, as after a sync tool evicts them', async () => {
+			const [hub, a, b] = await vaultOf();
+			await a.stop();
+			a.vault.files.clear();
+			await a.start();
+			await settle(a, b);
+			expect(a.held).toEqual([MANY]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(MANY);
+			expect(Object.keys(b.files())).toHaveLength(MANY);
+		});
+
+		it('holds an empty listing when notes are known, even when they are few', async () => {
+			const [hub, a, b] = await pair();
+			for (let n = 0; n < 6; n++) {
+				a.vault.write(`Few/${n}.md`, `note ${n}`);
+			}
+			await settle(a, b);
+			await a.stop();
+			a.vault.files.clear();
+			await a.start();
+			await settle(a, b);
+			expect(a.held).toEqual([6]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(6);
+		});
+
+		it('moves a folder of notes into a hidden folder as a hold, not a delete', async () => {
+			const [hub, a, b] = await vaultOf();
+			for (let n = 0; n < MANY; n++) {
+				a.vault.move(`Big/${n}.md`, `.Big/${n}.md`);
+			}
+			await settle(a, b);
+			expect(a.held).toEqual([MANY]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(MANY);
+		});
+
+		it('deletes a few notes at once without asking', async () => {
+			const [hub, a, b] = await vaultOf(40);
+			for (let n = 0; n < 10; n++) {
+				a.vault.remove(`Big/${n}.md`);
+			}
+			await settle(a, b);
+			expect(a.held).toEqual([]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(MANY + 30);
+		});
+
+		it('does not hold deletions under a folder mapping', async () => {
+			const hub = new MemoryHub();
+			const a = new Device(hub, folderMapping('Notes'));
+			const b = new Device(hub, folderMapping('Notes'));
+			await a.start();
+			await b.start();
+			for (let n = 0; n < MANY; n++) {
+				a.vault.write(`Notes/${n}.md`, `note ${n}`);
+			}
+			await settle(a, b);
+			for (let n = 0; n < MANY; n++) {
+				a.vault.remove(`Notes/${n}.md`);
+			}
+			await settle(a, b);
+			expect(a.held).toEqual([]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(0);
+		});
+	});
+
+	it('does not write a note from another device into a configuration folder without a dot', async () => {
+		const hub = new MemoryHub();
+		const a = new Device(hub, WHOLE_VAULT, 'plain');
+		const b = new Device(hub, WHOLE_VAULT, 'other');
+		await a.start();
+		await b.start();
+		// The other device has no folder named like a's configuration folder.
+		b.vault.write('plain/x.md', 'from the other device');
+		b.vault.write('Inbox.md', 'inbox');
+		await settle(a, b);
+		expect(a.files()).toEqual({ 'Inbox.md': 'inbox' });
 	});
 
 	it('does not delete notes when it starts and the vault lists the same notes again', async () => {

@@ -396,7 +396,7 @@ export class StoasisSettingTab extends PluginSettingTab {
 			.setName(mapped ? 'Folder' : 'Or sync an existing folder')
 			.setDesc(
 				(wholeVault
-					? 'Choosing a folder downloads the space\'s notes into it. '
+					? 'Choosing a folder downloads the space\'s notes into it and uploads the notes already there as new notes. '
 					: mapped
 						? 'Notes in this folder and its subfolders sync with the space. ' +
 							'Choosing another folder merges its notes into the space. '

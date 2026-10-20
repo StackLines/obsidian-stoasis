@@ -346,6 +346,19 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		if (sameMapping(mapping, this.settings.mapping)) {
 			return;
 		}
+		if (this.settings.mapping?.kind === 'vault') {
+			const confirmed = await new ConfirmModal(
+				this.app,
+				'Sync a folder instead of the whole vault?',
+				`The space's notes will be downloaded into "${folder}", under their paths in the space, ` +
+					`and the notes already in "${folder}" will be uploaded as new notes. ` +
+					'Notes in the space are not deleted, but you may end up with copies. To sync the whole vault again later, the space must be empty.',
+				'Sync the folder',
+			).ask();
+			if (!confirmed) {
+				return;
+			}
+		}
 		await this.applyMapping(mapping, create, this.settings.syncEnabled);
 	}
 
@@ -390,6 +403,23 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		}
 		await this.applyMapping(WHOLE_VAULT, false, true);
 		return true;
+	}
+
+	/** Many notes of the whole vault are missing: delete them everywhere only if asked. */
+	private async askAboutDeletes(engine: SyncEngine, count: number): Promise<void> {
+		const confirmed = await new ConfirmModal(
+			this.app,
+			'Delete notes everywhere?',
+			`${count} synced notes are missing from this vault. Deleting them here removes them from your server and from your other devices, which keep a copy in their trash. ` +
+				'If this was a mistake, cancel, restore the files, then turn sync on again.',
+			`Delete ${count} notes`,
+		).ask();
+		if (confirmed) {
+			engine.releaseHeld();
+		} else {
+			await this.setSyncEnabled(false);
+			new Notice('Stoasis: sync is off. Restore the missing notes, then turn sync on.');
+		}
 	}
 
 	/** Whether the personal space has never held a note, by what the server counts. */
@@ -813,6 +843,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			onProblem: (message) => new Notice(message),
 			onTracked: () => this.editors.refresh(),
 			onRelink: (path) => this.editors.relink(path),
+			onMassDelete: (count) => void this.askAboutDeletes(engine, count),
 		});
 		const session: Session = {
 			source,

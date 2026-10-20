@@ -417,5 +417,20 @@ describe('plugin sync', () => {
 			expect(notices.find((n) => n.startsWith('Obsidian Sync is turned on'))).toContain('syncs its notes too');
 			expect(plugin.settings.folderWarnings).toContain('\nobsidian-sync');
 		}, 30_000);
+
+		it('asks before switching from the whole vault to a folder, and changes nothing when cancelled', async () => {
+			const { plugin: a } = await vaultDevice('ABCD2345', { 'Inbox.md': 'inbox', 'Work/Plan.md': 'plan' });
+			await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+			openedModals.length = 0;
+			const switching = a.setFolder('Work', false);
+			await eventually(() => expect(openedModals.length).toBe(1));
+			const modal = openedModals[0] as unknown as { contentEl: ContainerEl };
+			await eventually(() => expect(modal.contentEl.items.length).toBeGreaterThan(1));
+			const buttons = modal.contentEl.items.flatMap((i) => i.controls ?? []);
+			await (buttons.find((b) => b.label === 'Cancel') ?? fail()).click();
+			await switching;
+			expect(a.settings.mapping).toEqual({ kind: 'vault' });
+			expect(a.settings.syncEnabled).toBe(true);
+		}, 30_000);
 	});
 });

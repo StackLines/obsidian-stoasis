@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   to the folder a device syncs), because a second space cannot be made.
   Renaming or deleting a folder inside the vault moves or deletes its notes
   and sync keeps running. Folder warnings are worded for the vault.
+  Many notes missing from the vault at once, as when a folder is deleted or a
+  sync tool evicts files, are held until you confirm deleting them everywhere.
+  Switching from the vault to a folder asks first.
   Tested with simulated devices and a real sync server, 2,500 notes; not yet
   tested in Obsidian itself.
 
