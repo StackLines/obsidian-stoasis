@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the usage the server lists with the space and shows nothing when the server
   does not report it. Tested with simulated settings; not yet tested in
   Obsidian itself.
+- **Scan progress** in the Brain section while scanning is on: how many of
+  your notes wait to be read, whether the scanner is paused, and when the last
+  scan ran. The status is read when the settings tab opens and then once a
+  minute while it stays open, never faster; it shows nothing on a server
+  without it, and a failed read keeps what was shown. It carries counts and
+  times only. Tested with simulated settings; not yet tested in Obsidian
+  itself.
 - **Whole vault**: the space can map to the entire vault instead of one
   folder. Every Markdown note syncs, at the same path in the space, except
   Obsidian's configuration folder and hidden folders. Choose **Whole vault**

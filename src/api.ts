@@ -99,6 +99,22 @@ export interface Space {
 	usage: SpaceUsage | null;
 }
 
+/** One scanner stage's newest run; the outcome is null while it is running. */
+export interface ScanRun {
+	outcome: 'ok' | 'partial' | 'failed' | 'skipped' | null;
+	startedAt: string | null;
+	finishedAt: string | null;
+}
+
+/** The scanner's progress, as the server reports it: ids, counts, outcomes and times only. */
+export interface ScanStatus {
+	scanEnabled: boolean;
+	operatorEnabled: boolean;
+	lastRuns: { base: ScanRun | null; deterministic: ScanRun | null; llm: ScanRun | null };
+	llm: { pending: number; paused: boolean; pausedReason: string | null; pausedSince: string | null };
+	spaces: Array<{ spaceId: string; scanMode: ScanMode; llmPending: number }>;
+}
+
 export interface ScanSettings {
 	scanEnabled: boolean;
 	operatorEnabled: boolean;
@@ -198,6 +214,10 @@ export class NotesApi {
 
 	async scanSettings(): Promise<ScanSettings> {
 		return readScanSettings(await this.call('GET', '/scan-settings'));
+	}
+
+	async scanStatus(): Promise<ScanStatus> {
+		return readScanStatus(await this.call('GET', '/scan-status'));
 	}
 
 	async setScanEnabled(enabled: boolean): Promise<ScanSettings> {
@@ -458,6 +478,53 @@ function readSuggestion(body: Record<string, unknown>): Suggestion {
 			const error = value as Record<string, unknown>;
 			const key = error['key'];
 			return [{ key: typeof key === 'string' ? key : null, code: optionalString(error, 'code') }];
+		}),
+	};
+}
+
+const OUTCOMES = ['ok', 'partial', 'failed', 'skipped'] as const;
+
+function readScanRun(value: unknown): ScanRun | null {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return null;
+	}
+	const run = value as Record<string, unknown>;
+	const outcome = OUTCOMES.find((o) => o === run['outcome']) ?? null;
+	const text = (key: string) => (typeof run[key] === 'string' ? run[key] : null);
+	return { outcome, startedAt: text('started_at'), finishedAt: text('finished_at') };
+}
+
+/** An object, or an empty one: a part of the status the server left out reads as nothing. */
+function looseRecord(value: unknown): Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function readScanStatus(value: unknown): ScanStatus {
+	const status = asRecord(value);
+	const runs = looseRecord(status['last_runs']);
+	const llm = looseRecord(status['llm']);
+	const count = (n: unknown) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0);
+	const spaces = Array.isArray(status['spaces']) ? status['spaces'] : [];
+	return {
+		scanEnabled: status['scan_enabled'] === true,
+		operatorEnabled: status['operator_enabled'] === true,
+		lastRuns: {
+			base: readScanRun(runs['base']),
+			deterministic: readScanRun(runs['deterministic']),
+			llm: readScanRun(runs['llm']),
+		},
+		llm: {
+			pending: count(llm['pending']),
+			paused: llm['paused'] === true,
+			pausedReason: typeof llm['paused_reason'] === 'string' ? llm['paused_reason'] : null,
+			pausedSince: typeof llm['paused_since'] === 'string' ? llm['paused_since'] : null,
+		},
+		spaces: spaces.flatMap((item): ScanStatus['spaces'] => {
+			const space = looseRecord(item);
+			const mode = SCAN_MODES.find((m) => m === space['scan_mode']);
+			return typeof space['space_id'] === 'string' && mode !== undefined
+				? [{ spaceId: space['space_id'], scanMode: mode, llmPending: count(space['llm_pending']) }]
+				: [];
 		}),
 	};
 }

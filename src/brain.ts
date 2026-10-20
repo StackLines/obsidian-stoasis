@@ -2,12 +2,13 @@
 // and for the synced space its scan mode and base metadata. This module talks
 // to the server and keeps what it said; src/settings.ts draws it.
 
-import { ApiError, type ScanMode, type ScanSettings, type Space } from './api';
+import { ApiError, type ScanMode, type ScanSettings, type ScanStatus, type Space } from './api';
 import { describeApiError } from './pairing';
 
 /** The calls the Brain section makes; `NotesApi` has them all. */
 export interface BrainApi {
 	scanSettings(): Promise<ScanSettings>;
+	scanStatus(): Promise<ScanStatus>;
 	setScanEnabled(enabled: boolean): Promise<ScanSettings>;
 	listSpaces(): Promise<Space[]>;
 	setScanMode(spaceId: string, mode: ScanMode): Promise<Space>;
@@ -47,6 +48,9 @@ interface Candidate {
 	noBaseMetadata: boolean;
 }
 
+/** The scanner's status is asked for no more often than this, however often the tab is drawn. */
+export const STATUS_MIN_MS = 60_000;
+
 export const UNREACHABLE = "Couldn't reach the server. Nothing was changed.";
 const UNREACHABLE_LOAD = "Couldn't reach the server.";
 export const NOT_OWNER = "Only the space's owner can change this.";
@@ -62,8 +66,17 @@ export class Brain {
 	/** Set when the server refused an owner-only change, or answered 404 for base metadata. */
 	private forbidden = false;
 	private noBaseMetadata = false;
+	/** The scanner's progress; null until known, and for a server without it. */
+	status: ScanStatus | null = null;
+	private statusAt = Number.NEGATIVE_INFINITY;
+	/** Set when the server answered 404: it has no scan status, so nothing asks again. */
+	private noStatus = false;
+	private poll: number | null = null;
 
-	constructor(private readonly changed: () => void) {}
+	constructor(
+		private readonly changed: () => void,
+		private readonly now: () => number = () => Date.now(),
+	) {}
 
 	/**
 	 * Loads what the server says, once for each server and space; `api` is null
@@ -109,6 +122,47 @@ export class Brain {
 			return;
 		}
 		this.show({ scan, space, message, forbidden: false, noBaseMetadata: false });
+		this.watchStatus(api, generation);
+	}
+
+	/** Reads the scanner's status now, then once a minute until the section is reset. */
+	private watchStatus(api: BrainApi, generation: number): void {
+		void this.refreshStatus(api, generation);
+		this.poll = window.setInterval(() => void this.refreshStatus(api, generation), STATUS_MIN_MS);
+	}
+
+	/**
+	 * Asks for the status unless it was asked for less than a minute ago. A
+	 * failure keeps what was shown; a 404 ends the asking and hides it.
+	 */
+	private async refreshStatus(api: BrainApi, generation: number): Promise<void> {
+		const view = this.view;
+		if (this.generation !== generation || view.kind !== 'ready' || this.noStatus || !view.scan.scanEnabled) {
+			return;
+		}
+		if (this.now() - this.statusAt < STATUS_MIN_MS) {
+			return;
+		}
+		this.statusAt = this.now();
+		let status: ScanStatus | null;
+		try {
+			status = await api.scanStatus();
+		} catch (error) {
+			if (notFound(error)) {
+				this.noStatus = true;
+				status = null;
+			} else {
+				return;
+			}
+		}
+		if (this.generation !== generation) {
+			return;
+		}
+		const same = JSON.stringify(status) === JSON.stringify(this.status);
+		this.status = status;
+		if (!same) {
+			this.changed();
+		}
 	}
 
 	/** Forgets what was loaded, so the next `load` asks again. */
@@ -118,6 +172,13 @@ export class Brain {
 		this.view = { kind: 'idle' };
 		this.forbidden = false;
 		this.noBaseMetadata = false;
+		this.status = null;
+		this.statusAt = Number.NEGATIVE_INFINITY;
+		this.noStatus = false;
+		if (this.poll !== null) {
+			window.clearInterval(this.poll);
+			this.poll = null;
+		}
 	}
 
 	setScanEnabled(api: BrainApi, enabled: boolean): Promise<void> {
