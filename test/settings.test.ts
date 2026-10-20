@@ -584,6 +584,32 @@ describe('settings tab: Brain', () => {
 		expect(names()).toContain('Scan my notes automatically');
 	});
 
+	it('shows how much of its quota the space uses, to any role, and warns from 90%', async () => {
+		const GB = 1024 ** 3;
+		for (const [bytes, role, expected, warns] of [
+			[Math.round(1.2 * GB), 'editor', '1.2 GB of 10 GB', false],
+			[9 * GB, 'viewer', '9 GB of 10 GB', true],
+			[10 * GB, 'owner', '10 GB of 10 GB', true],
+		] as const) {
+			const { setting, api } = await brain((api) => {
+				api.spaces[0] = {
+					...api.spaces[0]!,
+					role,
+					usage: { notesBytes: 1, versionsBytes: 1, attachmentsBytes: 0, derivedBytes: 0, totalBytes: bytes, quotaBytes: 10 * GB },
+				};
+			});
+			expect(api.calls).not.toContain('usage');
+			const desc = setting('Space storage').desc ?? '';
+			expect(desc.startsWith(expected), desc).toBe(true);
+			expect(/% full|is full/.test(desc), desc).toBe(warns);
+		}
+	});
+
+	it('shows no storage when the server does not report usage', async () => {
+		const { names } = await brain();
+		expect(names()).not.toContain('Space storage');
+	});
+
 	it('shows only the switch until a space is known, and asks again each time the tab opens', async () => {
 		const { tab, names, api, host } = await brain((_, host) => {
 			host.settings.spaceId = '';

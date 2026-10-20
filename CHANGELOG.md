@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Space storage** in the settings tab: how much of its quota your space uses,
+  such as "1.2 GB of 10 GB", for any role, with a warning from 90%. It reads
+  the usage the server lists with the space and shows nothing when the server
+  does not report it. Tested with simulated settings; not yet tested in
+  Obsidian itself.
 - **Whole vault**: the space can map to the entire vault instead of one
   folder. Every Markdown note syncs, at the same path in the space, except
   Obsidian's configuration folder and hidden folders. Choose **Whole vault**

@@ -1,3 +1,4 @@
+import { describeUsage } from './usage';
 import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import type { ScanMode } from './api';
 import { Brain, describeScanModes, type BrainApi } from './brain';
@@ -496,6 +497,16 @@ export class StoasisSettingTab extends PluginSettingTab {
 			);
 
 		const space = view.space;
+		// Any role may read the space's usage; a server that does not report it shows nothing.
+		if (space?.usage != null) {
+			const { summary, warning } = describeUsage(space.usage);
+			new Setting(containerEl)
+				.setName('Space storage')
+				.setDesc(
+					`${summary}. Notes, saved versions and files.` +
+						(warning === '' ? '' : ` ${warning}`),
+				);
+		}
 		if (space === null || !view.owner) {
 			return;
 		}
