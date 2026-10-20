@@ -28,7 +28,7 @@ export interface FolderCheck {
 	attachments: string | null;
 }
 
-/** What else syncs or changes `folder`, a vault path. */
+/** What else syncs or changes `folder`, a vault path; the empty string is the whole vault. */
 export async function checkFolder(probe: FolderProbe, folder: string): Promise<FolderCheck> {
 	const risks: FolderRisk[] = [];
 	const full = decoded(probe.fullPath(folder));
@@ -94,7 +94,7 @@ export function corePluginOn(json: string | null, id: string): boolean {
 
 /** A `.git` folder in the vault root, or in the folder or any folder around it. */
 async function inGitTree(probe: FolderProbe, folder: string): Promise<boolean> {
-	const segments = folder.split('/');
+	const segments = folder === '' ? [] : folder.split('/');
 	const candidates = ['.git', ...segments.map((_, i) => `${segments.slice(0, i + 1).join('/')}/.git`)];
 	for (const candidate of candidates) {
 		if (await probe.exists(candidate)) {
@@ -127,7 +127,8 @@ export function attachmentsOutside(json: string | null, folder: string): string 
 		return null;
 	}
 	const where = path.replace(/^\/+|\/+$/g, '');
-	if (where === folder || where.startsWith(`${folder}/`)) {
+	// Everything in the vault is inside the whole vault.
+	if (folder === '' || where === folder || where.startsWith(`${folder}/`)) {
 		return null;
 	}
 	return where === '' ? '/' : where;
@@ -156,27 +157,31 @@ function parseJson(json: string | null): unknown {
 	}
 }
 
-/** The warning for one risk, for a notice. */
+/** The warning for one risk, for a notice. `folder` is empty for the whole vault. */
 export function describeRisk(risk: FolderRisk, folder: string, attachments: string | null): string {
+	const vault = folder === '';
+	const subject = vault ? 'This vault' : `"${folder}"`;
 	switch (risk) {
 		case 'icloud':
 			return (
-				`"${folder}" seems to be in iCloud Drive, which may sync it too. The two can undo each ` +
+				`${subject} seems to be in iCloud Drive, which may sync it too. The two can undo each ` +
 				"other's changes or make duplicates; keep the vault out of iCloud Drive to sync it with Stoasis."
 			);
 		case 'dropbox':
 			return (
-				`"${folder}" seems to be in Dropbox, which may sync it too. The two can undo each other's ` +
+				`${subject} seems to be in Dropbox, which may sync it too. The two can undo each other's ` +
 				'changes or make duplicates; keep the vault out of Dropbox to sync it with Stoasis.'
 			);
 		case 'obsidian-sync':
-			return (
-				`Obsidian Sync is turned on in this vault and may sync "${folder}" too. If it does, ` +
-				"exclude the folder in Obsidian Sync's settings so that only Stoasis syncs it."
-			);
+			return vault
+				? 'Obsidian Sync is turned on in this vault and syncs its notes too. The two can undo each ' +
+						"other's changes or make duplicates; turn Obsidian Sync off for the notes, or sync only a " +
+						'folder with Stoasis and exclude that folder in Obsidian Sync.'
+				: `Obsidian Sync is turned on in this vault and may sync "${folder}" too. If it does, ` +
+						"exclude the folder in Obsidian Sync's settings so that only Stoasis syncs it.";
 		case 'git':
 			return (
-				`"${folder}" may be in a git working tree. A pull or checkout would change its notes, and ` +
+				`${subject} may be in a git working tree. A pull or checkout would change its notes, and ` +
 				'Stoasis syncs those changes to your other devices like any edit.'
 			);
 		case 'attachments':
@@ -191,5 +196,6 @@ export function describeRisk(risk: FolderRisk, folder: string, attachments: stri
 
 /** The key that records a warning was shown for a folder. */
 export function warningKey(folder: string, risk: FolderRisk): string {
+	// The whole vault has an empty folder; no real folder has an empty name.
 	return `${folder}\n${risk}`;
 }

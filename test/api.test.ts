@@ -102,6 +102,7 @@ describe('NotesApi', () => {
 				archived: false,
 				baseMetadata: false,
 				baseBackfillRequested: true,
+				usage: null,
 			},
 			// A server without base metadata yet says nothing about it.
 			{
@@ -113,6 +114,7 @@ describe('NotesApi', () => {
 				archived: false,
 				baseMetadata: null,
 				baseBackfillRequested: false,
+				usage: null,
 			},
 		]);
 	});

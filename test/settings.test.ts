@@ -10,6 +10,7 @@ import {
 	type SettingsHost,
 	type StoasisSettings,
 } from '../src/settings';
+import { folderMapping, WHOLE_VAULT } from '../src/sync/paths';
 import type { SyncSnapshot } from '../src/status';
 import { ApiError, type ScanMode, type ScanSettings, type Space } from '../src/api';
 import { Brain, type BrainApi } from '../src/brain';
@@ -41,7 +42,7 @@ describe('parseSettings', () => {
 		const stored = {
 			serverUrl: 'https://notes.example.test',
 			deviceKey: 'k',
-			folder: 'Notes',
+			mapping: { kind: 'folder', path: 'Notes' },
 			syncEnabled: true,
 			sync: { known: { 'a.md': '6f1c1d9e-8f0a-4a57-9a51-2f4f3e0f9a10' }, seeded: true },
 		};
@@ -94,6 +95,7 @@ class FakeBrainApi implements BrainApi {
 			archived: false,
 			baseMetadata: true,
 			baseBackfillRequested: false,
+			usage: null,
 		},
 	];
 	fail: Partial<Record<BrainCall, ApiError>> = {};
@@ -158,7 +160,7 @@ class FakeHost {
 	status(): SyncSnapshot {
 		return {
 			paired: getPairingState(this.settings) === 'paired',
-			configured: this.settings.folder !== '' && this.settings.syncEnabled,
+			configured: this.settings.mapping !== null && this.settings.syncEnabled,
 			connection: null,
 			pending: 0,
 			refused: 0,
@@ -194,8 +196,13 @@ class FakeHost {
 	}
 	setFolder(folder: string, create: boolean): Promise<void> {
 		this.calls.push(`folder ${folder} ${create}`);
-		this.settings.folder = folder;
+		this.settings.mapping = folderMapping(folder);
 		return Promise.resolve();
+	}
+	chooseWholeVault(): Promise<boolean> {
+		this.calls.push('whole vault');
+		this.settings.mapping = WHOLE_VAULT;
+		return Promise.resolve(true);
 	}
 	setSyncEnabled(enabled: boolean): Promise<void> {
 		this.calls.push(`sync ${enabled}`);
@@ -210,7 +217,7 @@ class FakeHost {
 	}
 	downloadToDevice(): Promise<void> {
 		this.calls.push('download');
-		this.settings.folder = this.downloadFolder();
+		this.settings.mapping = folderMapping(this.downloadFolder());
 		this.settings.syncEnabled = true;
 		return Promise.resolve();
 	}
@@ -330,9 +337,13 @@ describe('settings tab', () => {
 		);
 		expect(control('Or sync an existing folder').options).toEqual([
 			['', 'Choose a folder'],
+			['/vault', 'Whole vault'],
 			['Journal', 'Journal'],
 			['Work', 'Work'],
 		]);
+		expect(setting('Or sync an existing folder').desc).toContain(
+			"Every Markdown note in this vault syncs, except Obsidian's own settings and hidden folders.",
+		);
 		expect(names).not.toContain('Sync this folder');
 		expect(names).not.toContain('Space');
 		expect(items().some((i) => i.name === 'Pairing code')).toBe(false);
@@ -404,7 +415,7 @@ describe('settings tab: Brain', () => {
 
 	async function brain(prepare: (api: FakeBrainApi, host: FakeHost) => void = () => {}) {
 		const host = paired();
-		host.settings.folder = 'Notes';
+		host.settings.mapping = folderMapping('Notes');
 		const api = new FakeBrainApi();
 		host.brain = api;
 		prepare(api, host);

@@ -66,6 +66,16 @@ import {
 	type KeepResult,
 } from './conflict';
 import { ConflictModal } from './conflict-modal';
+import { ConfirmModal } from './confirm-modal';
+import {
+	folderMapping,
+	isWithin,
+	mappedFolder,
+	sameMapping,
+	toRelative,
+	WHOLE_VAULT,
+	type Mapping,
+} from './sync/paths';
 
 /** How long to wait before saving after the sync state changed. */
 const SAVE_DELAY_MS = 2000;
@@ -75,6 +85,8 @@ const RESCAN_DELAY_MS = 2000;
 const SPACE_RETRY_MS = 30_000;
 /** How often to ask again for the key of a disconnected device to be revoked. */
 const REVOKE_RETRY_MS = 10 * 60_000;
+/** Above this many notes, syncing the whole vault asks what is about to be uploaded. */
+export const LARGE_FIRST_SYNC = 500;
 /** How long to wait before showing how far a download has come. */
 const DOWNLOAD_UPDATE_MS = 250;
 
@@ -230,7 +242,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		}
 		return {
 			paired: getPairingState(this.settings) === 'paired',
-			configured: this.settings.folder !== '' && this.settings.syncEnabled,
+			configured: this.settings.mapping !== null && this.settings.syncEnabled,
 			connection: session === null ? null : session.source.state,
 			pending: session === null ? 0 : session.source.pending,
 			refused: session === null ? 0 : session.source.refused,
@@ -330,10 +342,69 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	async setFolder(folder: string, create: boolean): Promise<void> {
-		if (folder === this.settings.folder) {
+		const mapping = folderMapping(folder);
+		if (sameMapping(mapping, this.settings.mapping)) {
 			return;
 		}
-		await this.mapFolder(folder, create, this.settings.syncEnabled);
+		await this.applyMapping(mapping, create, this.settings.syncEnabled);
+	}
+
+	async chooseWholeVault(): Promise<boolean> {
+		if (sameMapping(WHOLE_VAULT, this.settings.mapping)) {
+			return true;
+		}
+		const api = this.brainApi();
+		if (api === null) {
+			new Notice('Pair this device first.');
+			return false;
+		}
+		let empty;
+		try {
+			empty = await this.spaceIsEmpty(api);
+		} catch (error) {
+			new Notice(describeApiError(error));
+			return false;
+		}
+		if (!empty) {
+			new Notice(
+				'This space already has notes, synced from a folder on this or another device. ' +
+					'Paths in a space are relative to the folder each device syncs, so the whole vault ' +
+					'cannot be merged into it. It can only be synced into a space that has no notes yet.',
+				0,
+			);
+			return false;
+		}
+		const count = this.wholeVaultNotes();
+		const text =
+			count > LARGE_FIRST_SYNC
+				? `${count} notes will be uploaded to your server. This can take a while; Obsidian stays usable meanwhile.`
+				: `${count} ${count === 1 ? 'note' : 'notes'} will be uploaded to your server.`;
+		const confirmed = await new ConfirmModal(
+			this.app,
+			'Sync the whole vault?',
+			`${text} Every Markdown note in this vault syncs, except Obsidian's own settings and hidden folders.`,
+			'Sync the whole vault',
+		).ask();
+		if (!confirmed) {
+			return false;
+		}
+		await this.applyMapping(WHOLE_VAULT, false, true);
+		return true;
+	}
+
+	/** Whether the personal space has never held a note, by what the server counts. */
+	private async spaceIsEmpty(api: NotesApi): Promise<boolean> {
+		const space = (await api.listSpaces()).find((s) => s.id === this.settings.spaceId);
+		// A server that does not report usage cannot say; assume the space has notes.
+		return space?.usage !== null && space?.usage !== undefined && space.usage.notesBytes === 0;
+	}
+
+	/** How many notes the whole vault would upload. */
+	wholeVaultNotes(): number {
+		const configDir = this.app.vault.configDir;
+		return this.app.vault
+			.getMarkdownFiles()
+			.filter((file) => toRelative(WHOLE_VAULT, file.path, configDir) !== null).length;
 	}
 
 	brainApi(): NotesApi | null {
@@ -349,7 +420,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	async downloadToDevice(): Promise<void> {
-		await this.mapFolder(this.downloadFolder(), true, true);
+		await this.applyMapping(folderMapping(this.downloadFolder()), true, true);
 	}
 
 	/** Whether a new folder can be made at `path`, or it is an empty folder. */
@@ -363,15 +434,15 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		return !this.folders().some((folder) => folder.toLowerCase() === lower);
 	}
 
-	/** Syncs the space with `folder`, creating it when asked, in one restart. */
-	private async mapFolder(folder: string, create: boolean, enabled: boolean): Promise<void> {
+	/** Syncs the space with `mapping`, creating its folder when asked, in one restart. */
+	private async applyMapping(mapping: Mapping, create: boolean, enabled: boolean): Promise<void> {
 		await this.stopSync();
-		if (create && this.app.vault.getAbstractFileByPath(folder) === null) {
-			await this.app.vault.createFolder(folder);
+		if (create && mapping.kind === 'folder' && this.app.vault.getAbstractFileByPath(mapping.path) === null) {
+			await this.app.vault.createFolder(mapping.path);
 		}
-		if (folder !== this.settings.folder) {
-			this.settings.folder = folder;
-			// What the engine knew was about the old folder.
+		if (!sameMapping(mapping, this.settings.mapping)) {
+			this.settings.mapping = mapping;
+			// What the engine knew was about the old mapping.
 			this.settings.sync = emptyEngineState();
 		}
 		this.settings.syncEnabled = enabled;
@@ -632,7 +703,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 		const who = pairing.personName === '' ? '' : ` as ${pairing.personName}`;
 		new Notice(
-			this.settings.folder === ''
+			this.settings.mapping === null
 				? `Paired${who}. To get your notes on this device, open the Stoasis settings and choose "Download to this device".`
 				: `Paired${who}.`,
 		);
@@ -643,8 +714,8 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	private forgetPairing(): void {
 		// Which folder warnings were shown is about this device, not the pairing.
-		const { installId, folder, pendingRevocations, folderWarnings } = this.settings;
-		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, folder, pendingRevocations, folderWarnings };
+		const { installId, mapping, pendingRevocations, folderWarnings } = this.settings;
+		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, mapping, pendingRevocations, folderWarnings };
 		this.incompatibility = '';
 	}
 
@@ -691,12 +762,13 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	private async startSession(): Promise<void> {
 		const settings = this.settings;
-		if (this.unloaded || getPairingState(settings) !== 'paired' || settings.folder === '' || !settings.syncEnabled) {
+		const mapping = settings.mapping;
+		if (this.unloaded || getPairingState(settings) !== 'paired' || mapping === null || !settings.syncEnabled) {
 			this.updateStatus();
 			return;
 		}
-		if (!(this.app.vault.getAbstractFileByPath(settings.folder) instanceof TFolder)) {
-			new Notice(`The folder "${settings.folder}" no longer exists, so sync is paused. Choose a folder in the Stoasis settings.`);
+		if (mapping.kind === 'folder' && !(this.app.vault.getAbstractFileByPath(mapping.path) instanceof TFolder)) {
+			new Notice(`The folder "${mapping.path}" no longer exists, so sync is paused. Choose a folder in the Stoasis settings.`);
 			settings.syncEnabled = false;
 			await this.saveSettings();
 			this.updateStatus();
@@ -727,7 +799,8 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			vault: obsidianVault(this.app),
 			source,
 			spaceId: settings.spaceId,
-			folder: settings.folder,
+			mapping,
+			configDir: this.app.vault.configDir,
 			state: settings.sync,
 			saveState: () => {
 				this.saveSoon();
@@ -754,7 +827,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		source.onChange(() => this.updateStatus());
 		source.start();
 		this.updateStatus();
-		void this.warnAboutFolder(settings.folder);
+		void this.warnAboutFolder(mappedFolder(mapping) ?? '');
 		// Not awaited: the first start can wait for the server indefinitely, and
 		// stopping, disconnecting or choosing another folder must not wait for it.
 		void engine
@@ -772,7 +845,8 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	/**
 	 * Warns, once for each folder, when something else also syncs or changes
-	 * the synced folder, or keeps new attachments outside it.
+	 * the synced folder, or keeps new attachments outside it. The empty string
+	 * is the whole vault.
 	 */
 	async warnAboutFolder(folder: string): Promise<void> {
 		let check;
@@ -783,7 +857,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			return;
 		}
 		const fresh = check.risks.filter((risk) => !this.settings.folderWarnings.includes(warningKey(folder, risk)));
-		if (fresh.length === 0 || this.unloaded || this.settings.folder !== folder) {
+		if (fresh.length === 0 || this.unloaded || this.mappedFolderPath() !== folder) {
 			return;
 		}
 		for (const risk of fresh) {
@@ -875,14 +949,20 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	private folderRenamed(folder: TAbstractFile, oldPath: string): void {
-		const mapped = this.settings.folder;
-		if (mapped === '') {
+		const mapping = this.settings.mapping;
+		if (mapping === null) {
 			return;
 		}
-		if (mapped === oldPath || mapped.startsWith(`${oldPath}/`)) {
+		if (mapping.kind === 'vault') {
+			// The vault root cannot be renamed; a folder in it moved with its notes.
+			this.rescanSoon();
+			return;
+		}
+		const mapped = mapping.path;
+		if (isWithin(oldPath, mapped)) {
 			// The synced folder itself moved: follow it.
 			const moved = folder.path + mapped.slice(oldPath.length);
-			this.settings.folder = moved;
+			this.settings.mapping = folderMapping(moved);
 			this.session?.engine.folderMoved(moved);
 			this.saveSoon();
 			this.settingTab?.refresh();
@@ -892,11 +972,18 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	private folderDeleted(folder: TAbstractFile): void {
-		const mapped = this.settings.folder;
-		if (mapped === '') {
+		const mapping = this.settings.mapping;
+		if (mapping === null) {
 			return;
 		}
-		if (mapped === folder.path || mapped.startsWith(`${folder.path}/`)) {
+		if (mapping.kind === 'vault') {
+			// The vault root cannot be deleted, so this is a folder of notes: its
+			// files were deleted like any others and the engine handles each.
+			this.rescanSoon();
+			return;
+		}
+		const mapped = mapping.path;
+		if (isWithin(folder.path, mapped)) {
 			// Deleting the synced folder must not delete the notes on every
 			// device: stop before the engine handles the files inside it.
 			void this.session?.engine.stop();
@@ -904,6 +991,12 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		} else if (folder.path.startsWith(`${mapped}/`)) {
 			this.rescanSoon();
 		}
+	}
+
+	/** The mapped folder's path, empty for the whole vault, null when nothing is mapped. */
+	private mappedFolderPath(): string | null {
+		const mapping = this.settings.mapping;
+		return mapping === null ? null : (mappedFolder(mapping) ?? '');
 	}
 
 	private rescanSoon(): void {

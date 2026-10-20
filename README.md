@@ -144,6 +144,11 @@ and turns sync on. If a folder of that name already holds something, it uses a
 numbered name such as `Personal 2`; if the space name cannot be used as a
 folder name, the folder is called `Stoasis`.
 
+To sync the whole vault instead, choose **Whole vault**. Every Markdown note
+syncs at its own path, except Obsidian's configuration folder and hidden
+folders. It is offered only while your space has no notes, and a window asks
+first, saying how many notes will be uploaded.
+
 To sync a folder you already have instead, choose it under **Or sync an
 existing folder** and turn on **Sync this folder**. Notes already in that
 folder are added to the space and appear on your other devices.

@@ -24,18 +24,57 @@ export function isSyncablePath(rel: string): boolean {
 	return rel.toLowerCase().endsWith('.md');
 }
 
-/** The path of a vault file relative to `folder`, or null when it is outside. */
-export function toRelative(folder: string, vaultPath: string): string | null {
-	const prefix = `${folder}/`;
-	if (!vaultPath.startsWith(prefix)) {
-		return null;
+/** What a space is mapped to on this device: one folder, or the whole vault. */
+export type Mapping = { kind: 'folder'; path: string } | { kind: 'vault' };
+
+export const WHOLE_VAULT: Mapping = { kind: 'vault' };
+
+/** A mapping to the vault folder at `path`, which is never the vault root. */
+export function folderMapping(path: string): Mapping {
+	return { kind: 'folder', path };
+}
+
+export function sameMapping(a: Mapping | null, b: Mapping | null): boolean {
+	if (a === null || b === null) {
+		return a === b;
 	}
-	const rel = vaultPath.slice(prefix.length);
+	return a.kind === 'vault' ? b.kind === 'vault' : b.kind === 'folder' && a.path === b.path;
+}
+
+/** The folder mapped, or null for the whole vault. */
+export function mappedFolder(mapping: Mapping): string | null {
+	return mapping.kind === 'folder' ? mapping.path : null;
+}
+
+/** Whether `path` is `folder` or inside it. */
+export function isWithin(folder: string, path: string): boolean {
+	return path === folder || path.startsWith(`${folder}/`);
+}
+
+/**
+ * The path of a vault file relative to the mapping, or null when it is
+ * outside it, is not a note, or is hidden. From the whole vault, the
+ * configuration folder is outside too: it holds the paired key.
+ */
+export function toRelative(mapping: Mapping, vaultPath: string, configDir = ''): string | null {
+	let rel: string;
+	if (mapping.kind === 'vault') {
+		if (configDir !== '' && isWithin(configDir, vaultPath)) {
+			return null;
+		}
+		rel = vaultPath;
+	} else {
+		const prefix = `${mapping.path}/`;
+		if (!vaultPath.startsWith(prefix)) {
+			return null;
+		}
+		rel = vaultPath.slice(prefix.length);
+	}
 	return isSyncablePath(rel) ? rel : null;
 }
 
-export function toVaultPath(folder: string, rel: string): string {
-	return `${folder}/${rel}`;
+export function toVaultPath(mapping: Mapping, rel: string): string {
+	return mapping.kind === 'vault' ? rel : `${mapping.path}/${rel}`;
 }
 
 /** Parent folders of a relative path, outermost first. */

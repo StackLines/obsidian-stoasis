@@ -135,3 +135,30 @@ describe('folder warnings', () => {
 		expect(parseSettings({ folderWarnings: 'Notes' }).folderWarnings).toEqual([]);
 	});
 });
+
+describe('folder warnings for the whole vault', () => {
+	it('checks the vault itself: its cloud folder, git, Obsidian Sync and attachments', async () => {
+		const icloud = '/Users/me/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault';
+		const result = await checkFolder(
+			probe(icloud, { '.obsidian/core-plugins.json': '{"sync":true}', ...INSIDE }, ['.git']),
+			'',
+		);
+		expect(result.risks).toContain('icloud');
+		expect(result.risks).toContain('obsidian-sync');
+		expect(result.risks).toContain('git');
+		expect(result.risks).not.toContain('attachments');
+	});
+
+	it('does not warn about attachments: every folder of the vault is mapped', () => {
+		expect(attachmentsOutside('{"attachmentFolderPath":"Elsewhere"}', '')).toBeNull();
+	});
+
+	it('words the warnings for the vault, not for a folder', () => {
+		for (const risk of ['icloud', 'dropbox', 'obsidian-sync', 'git'] as const) {
+			const text = describeRisk(risk, '', null);
+			expect(text, risk).toMatch(/vault/i);
+			expect(text, risk).not.toMatch(/folder ""|"" /);
+		}
+	});
+});
+

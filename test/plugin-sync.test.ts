@@ -1,10 +1,18 @@
 import 'fake-indexeddb/auto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
-import StoasisPlugin from '../src/main';
+import StoasisPlugin, { LARGE_FIRST_SYNC } from '../src/main';
 import { FakeControlPlane } from './helpers/control-plane';
 import { eventually, TestSyncServer } from './helpers/sync-server';
-import { App, notices, setRequestHandler, shownNotices, TFile, type ContainerEl } from './stubs/obsidian';
+import {
+	App,
+	notices,
+	openedModals,
+	setRequestHandler,
+	shownNotices,
+	TFile,
+	type ContainerEl,
+} from './stubs/obsidian';
 
 // The whole plugin, two devices, a real sync server: pairing, mapping a folder,
 // syncing both ways, going offline and the version gate.
@@ -67,6 +75,43 @@ async function device(code: string, folder: string, files: Record<string, string
 	await plugin.setFolder(folder, false);
 	await plugin.setSyncEnabled(true);
 	return plugin;
+}
+
+/** A device paired and mapped to the whole vault, the confirmation answered as given. */
+async function vaultDevice(
+	code: string,
+	files: Record<string, string>,
+	answer: 'confirm' | 'cancel' = 'confirm',
+): Promise<{ plugin: TestPlugin; chosen: boolean; asked: string }> {
+	const app = new App();
+	for (const [path, text] of Object.entries(files)) {
+		app.vault.files.set(path, text);
+		for (let at = path.indexOf('/'); at > 0; at = path.indexOf('/', at + 1)) {
+			app.vault.folders.add(path.slice(0, at));
+		}
+	}
+	const plugin = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.3.0' } as never) as TestPlugin;
+	plugins.push(plugin);
+	await plugin.onload();
+	app.workspace.ready();
+	expect(await plugin.pair(control.server, code, 'Test device')).toBe(true);
+	openedModals.length = 0;
+	const choosing = plugin.chooseWholeVault();
+	await eventually(() => expect(openedModals.length).toBe(1));
+	const modal = openedModals[0] as unknown as { contentEl: ContainerEl; onClose(): void };
+	await eventually(() => expect(modal.contentEl.items.length).toBeGreaterThan(1));
+	const asked = modal.contentEl.items.map((i) => i.text ?? '').join(' ');
+	const buttons = modal.contentEl.items.flatMap((i) => i.controls ?? []);
+	await (buttons.find((b) => b.label === (answer === 'confirm' ? 'Sync the whole vault' : 'Cancel')) ?? fail()).click();
+	const chosen = await choosing;
+	if (chosen) {
+		await plugin.setSyncEnabled(true);
+	}
+	return { plugin, chosen, asked };
+}
+
+function fail(): never {
+	throw new Error('control not found');
 }
 
 function status(plugin: TestPlugin): string {
@@ -138,7 +183,7 @@ describe('plugin sync', () => {
 		await eventually(() => expect(b.app.vault.files.size).toBe(2), 8000);
 
 		await a.app.vault.rename(a.app.vault.getAbstractFileByPath('Notes') as never, 'Renamed');
-		expect(a.settings.folder).toBe('Renamed');
+		expect(a.settings.mapping).toEqual({ kind: 'folder', path: 'Renamed' });
 		await a.app.vault.modify(new TFile('Renamed/One.md'), 'one, edited');
 		await eventually(() => expect(b.app.vault.files.get('Notes/One.md')).toBe('one, edited'), 8000);
 		expect(b.app.vault.files.get('Notes/Two.md')).toBe('two');
@@ -178,7 +223,7 @@ describe('plugin sync', () => {
 		// Slow enough that the download is still going on when progress is first shown.
 		server.authDelayMs = 600;
 		await b.downloadToDevice();
-		expect(b.settings).toMatchObject({ folder: 'Personal', syncEnabled: true });
+		expect(b.settings).toMatchObject({ mapping: { kind: 'folder', path: 'Personal' }, syncEnabled: true });
 		// The status bar and the settings tab show the same count while the notice is up.
 		await eventually(() => expect(status(b)).toMatch(/^Stoasis: downloading \d+\/30$/), 8000);
 		expect(b.status().download?.listed).toBe(30);
@@ -194,4 +239,183 @@ describe('plugin sync', () => {
 		expect(notices.at(-1)).toBe('Stoasis: your notes are on this device.');
 		expect(notices.filter((n) => n.startsWith('Stoasis: downloading'))).toHaveLength(1);
 	}, 40_000);
+
+	describe('mapped to the whole vault', () => {
+		const VAULT = {
+			'Inbox.md': '# Inbox\n',
+			'Work/Plan.md': 'plan',
+			'Work/Deep/Notes.md': 'deep',
+			'.obsidian/plugins/stoasis/data.md': 'the paired key lives here',
+			'.trash/Old.md': 'trashed',
+			'Work/.hidden/x.md': 'hidden',
+			'Work/picture.png': 'binary',
+		};
+
+		it('syncs notes from the root, nested folders included, and nothing hidden', async () => {
+			const { plugin: a, chosen } = await vaultDevice('ABCD2345', VAULT);
+			expect(chosen).toBe(true);
+			expect(a.settings.mapping).toEqual({ kind: 'vault' });
+			await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+			expect(Object.keys(a.settings.sync.known).sort()).toEqual(['Inbox.md', 'Work/Deep/Notes.md', 'Work/Plan.md']);
+
+			// Another device syncs the space into a folder: paths in the index are the vault's own.
+			const b = await device('EFGH2345', 'Synced');
+			await eventually(() => expect(b.app.vault.files.get('Synced/Work/Deep/Notes.md')).toBe('deep'), 8000);
+			expect(b.app.vault.files.get('Synced/Inbox.md')).toBe('# Inbox\n');
+			expect([...b.app.vault.files.keys()].sort()).toEqual([
+				'Synced/Inbox.md',
+				'Synced/Work/Deep/Notes.md',
+				'Synced/Work/Plan.md',
+			]);
+
+			await b.app.vault.create('Synced/Fresh.md', 'new');
+			await eventually(() => expect(a.app.vault.files.get('Fresh.md')).toBe('new'), 8000);
+		}, 40_000);
+
+		it('follows a note at the root through a rename, a move and a delete', async () => {
+			const { plugin: a } = await vaultDevice('ABCD2345', { 'Inbox.md': 'inbox' });
+			const b = await device('EFGH2345', 'Synced');
+			await eventually(() => expect(b.app.vault.files.get('Synced/Inbox.md')).toBe('inbox'), 8000);
+
+			await a.app.vault.rename(new TFile('Inbox.md') as never, 'Todo.md');
+			await eventually(() => expect(b.app.vault.files.get('Synced/Todo.md')).toBe('inbox'), 8000);
+			expect(b.app.vault.files.has('Synced/Inbox.md')).toBe(false);
+
+			await a.app.vault.rename(new TFile('Todo.md') as never, 'Work/Todo.md');
+			await eventually(() => expect(b.app.vault.files.get('Synced/Work/Todo.md')).toBe('inbox'), 8000);
+
+			await a.app.vault.delete(new TFile('Work/Todo.md') as never);
+			await eventually(() => expect(b.app.vault.files.has('Synced/Work/Todo.md')).toBe(false), 8000);
+			expect(a.settings.mapping).toEqual({ kind: 'vault' });
+			expect(status(a)).toBe('Stoasis: synced');
+		}, 40_000);
+
+		it('treats renaming and deleting a folder as moving and deleting its notes, and keeps syncing', async () => {
+			const { plugin: a } = await vaultDevice('ABCD2345', {
+				'Inbox.md': 'inbox',
+				'Work/Plan.md': 'plan',
+				'Work/Deep/Notes.md': 'deep',
+				'Old/Gone.md': 'gone',
+			});
+			const b = await device('EFGH2345', 'Synced');
+			await eventually(() => expect(b.app.vault.files.size).toBe(4), 8000);
+
+			await a.app.vault.rename(a.app.vault.getAbstractFileByPath('Work') as never, 'Projects');
+			await eventually(() => expect(b.app.vault.files.get('Synced/Projects/Deep/Notes.md')).toBe('deep'), 8000);
+			expect(b.app.vault.files.has('Synced/Work/Plan.md')).toBe(false);
+			// The vault root is not a mapped folder that went missing.
+			expect(a.settings.mapping).toEqual({ kind: 'vault' });
+			expect(status(a)).toBe('Stoasis: synced');
+
+			await a.app.vault.delete(a.app.vault.getAbstractFileByPath('Old') as never);
+			await eventually(() => expect(b.app.vault.files.has('Synced/Old/Gone.md')).toBe(false), 8000);
+			expect(b.app.vault.files.get('Synced/Inbox.md')).toBe('inbox');
+			expect(a.settings.syncEnabled).toBe(true);
+			expect(status(a)).toBe('Stoasis: synced');
+
+			await b.app.vault.create('Synced/After.md', 'after');
+			await eventually(() => expect(a.app.vault.files.get('After.md')).toBe('after'), 8000);
+		}, 40_000);
+
+		it('keeps its mapping and its notes across a restart', async () => {
+			const { plugin: a } = await vaultDevice('ABCD2345', { 'Inbox.md': 'inbox', 'Work/Plan.md': 'plan' });
+			await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+			await a.saveSettings();
+			const stored = (a as unknown as { storedData: unknown }).storedData;
+			expect(stored).toMatchObject({ mapping: { kind: 'vault' }, syncEnabled: true });
+			expect(stored).not.toHaveProperty('folder');
+			const { app } = a;
+			a.onunload();
+
+			const again = new StoasisPlugin(app, { id: 'stoasis', version: '0.3.0' } as never) as TestPlugin;
+			plugins.push(again);
+			(again as unknown as { storedData: unknown }).storedData = stored;
+			await again.onload();
+			app.workspace.ready();
+			expect(again.settings.mapping).toEqual({ kind: 'vault' });
+			await eventually(() => expect(status(again)).toBe('Stoasis: synced'), 8000);
+			await app.vault.modify(new TFile('Work/Plan.md'), 'plan, edited');
+			const b = await device('EFGH2345', 'Synced');
+			await eventually(() => expect(b.app.vault.files.get('Synced/Work/Plan.md')).toBe('plan, edited'), 8000);
+			expect(b.app.vault.files.get('Synced/Inbox.md')).toBe('inbox');
+		}, 40_000);
+
+		it('asks first, saying how many notes will be uploaded, and maps nothing when cancelled', async () => {
+			const { plugin, chosen, asked: text } = await vaultDevice('ABCD2345', VAULT, 'cancel');
+			expect(chosen).toBe(false);
+			expect(plugin.settings.mapping).toBeNull();
+			// Hidden folders, the configuration folder and other files do not count.
+			expect(text).toContain('3 notes will be uploaded to your server.');
+			expect(text).toContain("except Obsidian's own settings and hidden folders");
+			expect(plugin.settings.syncEnabled).toBe(false);
+		});
+
+		it('warns about a large vault before uploading', async () => {
+			const files: Record<string, string> = {};
+			for (let i = 0; i < LARGE_FIRST_SYNC + 1; i++) {
+				files[`Many/${i}.md`] = `n${i}`;
+			}
+			const { plugin, chosen, asked: text } = await vaultDevice('ABCD2345', files, 'cancel');
+			expect(chosen).toBe(false);
+			expect(text).toContain(`${LARGE_FIRST_SYNC + 1} notes will be uploaded to your server. This can take a while`);
+			expect(plugin.settings.mapping).toBeNull();
+		});
+
+		it('is refused for a space that already has notes, and changes nothing', async () => {
+			control.notesBytes = 4096;
+			const app = new App();
+			app.vault.files.set('Inbox.md', 'inbox');
+			const plugin = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.3.0' } as never) as TestPlugin;
+			plugins.push(plugin);
+			await plugin.onload();
+			app.workspace.ready();
+			expect(await plugin.pair(control.server, 'ABCD2345', 'Test device')).toBe(true);
+			openedModals.length = 0;
+			notices.length = 0;
+			expect(await plugin.chooseWholeVault()).toBe(false);
+			expect(openedModals).toHaveLength(0);
+			expect(notices.join('\n')).toContain('This space already has notes');
+			expect(plugin.settings.mapping).toBeNull();
+		});
+
+		it('is refused when the server does not say how much the space holds', async () => {
+			const app = new App();
+			const plugin = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.3.0' } as never) as TestPlugin;
+			plugins.push(plugin);
+			await plugin.onload();
+			app.workspace.ready();
+			expect(await plugin.pair(control.server, 'ABCD2345', 'Test device')).toBe(true);
+			for (const space of control.spaces) {
+				delete space['usage'];
+			}
+			(control as unknown as { usage: () => unknown }).usage = () => undefined;
+			notices.length = 0;
+			expect(await plugin.chooseWholeVault()).toBe(false);
+			expect(notices.join('\n')).toContain('This space already has notes');
+			expect(plugin.settings.mapping).toBeNull();
+		});
+
+		it('warns once about the vault root, in words that fit it', async () => {
+			const app = new App();
+			app.vault.adapter.hidden.set('.obsidian/core-plugins.json', '{"sync":true}');
+			app.vault.files.set('Inbox.md', 'inbox');
+			const plugin = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.3.0' } as never) as TestPlugin;
+			plugins.push(plugin);
+			await plugin.onload();
+			app.workspace.ready();
+			expect(await plugin.pair(control.server, 'ABCD2345', 'Test device')).toBe(true);
+			notices.length = 0;
+			const choosing = plugin.chooseWholeVault();
+			await eventually(() => expect(openedModals.length).toBeGreaterThan(0));
+			const modal = openedModals[openedModals.length - 1] as unknown as { contentEl: ContainerEl };
+			await eventually(() => expect(modal.contentEl.items.length).toBeGreaterThan(1));
+			const buttons = modal.contentEl.items.flatMap((i) => i.controls ?? []);
+			await (buttons.find((b) => b.label === 'Sync the whole vault') ?? fail()).click();
+			await choosing;
+			await plugin.setSyncEnabled(true);
+			await eventually(() => expect(notices.filter((n) => n.startsWith('Obsidian Sync is turned on')).length).toBe(1), 8000);
+			expect(notices.find((n) => n.startsWith('Obsidian Sync is turned on'))).toContain('syncs its notes too');
+			expect(plugin.settings.folderWarnings).toContain('\nobsidian-sync');
+		}, 30_000);
+	});
 });

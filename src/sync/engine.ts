@@ -9,19 +9,21 @@ import {
 } from './docs';
 import {
 	conflictPath,
+	folderMapping,
 	isNoteId,
 	isSyncablePath,
 	newNoteId,
 	sparePath,
 	toRelative,
 	toVaultPath,
+	type Mapping,
 } from './paths';
 import { captureBase, mergeOutsideEdit, replacesMost, setText, type MergeBase } from './text';
 
 /** The few vault operations the engine needs, with vault-relative paths. */
 export interface VaultAdapter {
-	/** Markdown files anywhere under `folder`. */
-	listMarkdown(folder: string): string[];
+	/** Markdown files anywhere in the mapping; the engine drops the ones it never syncs. */
+	listMarkdown(mapping: Mapping): string[];
 	exists(path: string): boolean;
 	read(path: string): Promise<string>;
 	/** Creates a file and any missing parent folders. */
@@ -77,8 +79,10 @@ export interface EngineOptions {
 	vault: VaultAdapter;
 	source: DocSource;
 	spaceId: string;
-	/** Vault folder the space is mapped to, without a trailing slash. */
-	folder: string;
+	/** What the space is mapped to: a vault folder, or the whole vault. */
+	mapping: Mapping;
+	/** The vault's configuration folder, never synced from the whole vault. */
+	configDir?: string;
 	state: EngineState;
 	saveState: (state: EngineState) => void;
 	/** Delay before a remote change to a closed note is written to disk. */
@@ -178,7 +182,7 @@ const LOAD_BATCH = 25;
 export class SyncEngine {
 	private readonly vault: VaultAdapter;
 	private readonly source: DocSource;
-	private folder: string;
+	private mapping: Mapping;
 	private readonly state: EngineState;
 	private readonly writeDelayMs: number;
 	private readonly now: () => Date;
@@ -216,7 +220,7 @@ export class SyncEngine {
 	constructor(private readonly options: EngineOptions) {
 		this.vault = options.vault;
 		this.source = options.source;
-		this.folder = options.folder;
+		this.mapping = options.mapping;
 		this.state = options.state;
 		this.writeDelayMs = options.writeDelayMs ?? 500;
 		this.now = options.now ?? (() => new Date());
@@ -400,7 +404,7 @@ export class SyncEngine {
 	 * for the folder arrives; events for the files inside it then match up.
 	 */
 	folderMoved(folder: string): void {
-		this.folder = folder;
+		this.mapping = folderMapping(folder);
 	}
 
 	/** Checks the folder against what the engine knows, as at startup. */
@@ -980,7 +984,7 @@ export class SyncEngine {
 		for (const rel of Object.keys(this.state.known)) {
 			index.add(rel);
 		}
-		for (const path of this.vault.listMarkdown(this.folder)) {
+		for (const path of this.vault.listMarkdown(this.mapping)) {
 			const rel = this.relative(path);
 			if (rel !== null) {
 				index.add(rel);
@@ -1154,7 +1158,7 @@ export class SyncEngine {
 			return;
 		}
 		const onDisk = new Set<string>();
-		for (const path of this.vault.listMarkdown(this.folder)) {
+		for (const path of this.vault.listMarkdown(this.mapping)) {
 			const rel = this.relative(path);
 			if (rel !== null) {
 				onDisk.add(rel);
@@ -1387,11 +1391,11 @@ export class SyncEngine {
 	}
 
 	private relative(path: string): string | null {
-		return toRelative(this.folder, path);
+		return toRelative(this.mapping, path, this.options.configDir);
 	}
 
 	private path(rel: string): string {
-		return toVaultPath(this.folder, rel);
+		return toVaultPath(this.mapping, rel);
 	}
 
 	private save(): void {

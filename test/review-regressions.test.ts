@@ -54,7 +54,7 @@ async function device(
 		vault,
 		source,
 		spaceId: SPACE_ID,
-		folder: 'Notes',
+		mapping: { kind: 'folder', path: 'Notes' },
 		state,
 		saveState: () => {},
 		writeDelayMs: 1,
@@ -317,7 +317,7 @@ describe('second review', () => {
 		});
 		const vault = new FakeVault();
 		const state = emptyEngineState();
-		const engine = new SyncEngine({ vault, source, spaceId: SPACE_ID, folder: 'Notes', state, saveState: () => {}, writeDelayMs: 1 });
+		const engine = new SyncEngine({ vault, source, spaceId: SPACE_ID, mapping: { kind: 'folder', path: 'Notes' }, state, saveState: () => {}, writeDelayMs: 1 });
 		vault.listener = engine;
 		cleanups.push(async () => {
 			vault.listener = null;
@@ -608,7 +608,7 @@ describe('server refusals and limits', () => {
 			vault,
 			source,
 			spaceId: SPACE_ID,
-			folder: 'Notes',
+			mapping: { kind: 'folder', path: 'Notes' },
 			state: emptyEngineState(),
 			saveState: () => {},
 		});
@@ -625,7 +625,7 @@ describe('server refusals and limits', () => {
 		server.requireListing = true;
 		const vault = new FakeVault();
 		const state = emptyEngineState();
-		const engine = new SyncEngine({ vault, source, spaceId: SPACE_ID, folder: 'Notes', state, saveState: () => {} });
+		const engine = new SyncEngine({ vault, source, spaceId: SPACE_ID, mapping: { kind: 'folder', path: 'Notes' }, state, saveState: () => {} });
 		vault.listener = engine;
 		cleanups.push(async () => {
 			vault.listener = null;
@@ -769,7 +769,7 @@ describe('plugin lifecycle', () => {
 		await p.setSyncEnabled(true);
 		await eventually(() => expect(p.status().connection).not.toBeNull());
 		expect(await finishes(p.setFolder('Other', false))).toBe(true);
-		expect(p.settings.folder).toBe('Other');
+		expect(p.settings.mapping).toEqual({ kind: 'folder', path: 'Other' });
 		expect(await finishes(p.setSyncEnabled(false))).toBe(true);
 		expect(p.status().connection).toBeNull();
 	});
@@ -937,7 +937,7 @@ describe('two devices through a sync server', () => {
 			vault,
 			source,
 			spaceId: SPACE_ID,
-			folder: 'Notes',
+			mapping: { kind: 'folder', path: 'Notes' },
 			state,
 			saveState: () => {},
 			writeDelayMs: 1,
