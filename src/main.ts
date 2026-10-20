@@ -714,7 +714,9 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	private forgetPairing(): void {
 		// Which folder warnings were shown is about this device, not the pairing.
-		const { installId, mapping, pendingRevocations, folderWarnings } = this.settings;
+		const { installId, pendingRevocations, folderWarnings } = this.settings;
+		// A folder stays; the whole vault is chosen per space, after its check and window.
+		const mapping = this.settings.mapping?.kind === 'folder' ? this.settings.mapping : null;
 		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, mapping, pendingRevocations, folderWarnings };
 		this.incompatibility = '';
 	}

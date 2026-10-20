@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   folder. Every Markdown note syncs, at the same path in the space, except
   Obsidian's configuration folder and hidden folders. Choose **Whole vault**
   in the settings tab; a window states how many notes will be uploaded and
-  asks first, and asks again with a warning above 500 notes. Only a space with
-  no notes can be mapped to the vault, because a second space cannot be made.
+  asks first, with a longer warning above 500 notes. Only a space with
+  no notes can be mapped to the vault (a note's path in the space is relative
+  to the folder a device syncs), because a second space cannot be made.
   Renaming or deleting a folder inside the vault moves or deletes its notes
   and sync keeps running. Folder warnings are worded for the vault.
   Tested with simulated devices and a real sync server, 2,500 notes; not yet

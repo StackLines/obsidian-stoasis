@@ -175,7 +175,7 @@ export function describeRisk(risk: FolderRisk, folder: string, attachments: stri
 		case 'obsidian-sync':
 			return vault
 				? 'Obsidian Sync is turned on in this vault and syncs its notes too. The two can undo each ' +
-						"other's changes or make duplicates; turn Obsidian Sync off for the notes, or sync only a " +
+						"other's changes or make duplicates; turn Obsidian Sync off for this vault, or sync only a " +
 						'folder with Stoasis and exclude that folder in Obsidian Sync.'
 				: `Obsidian Sync is turned on in this vault and may sync "${folder}" too. If it does, ` +
 						"exclude the folder in Obsidian Sync's settings so that only Stoasis syncs it.";

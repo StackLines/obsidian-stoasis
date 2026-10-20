@@ -146,7 +146,7 @@ folder name, the folder is called `Stoasis`.
 
 To sync the whole vault instead, choose **Whole vault**. Every Markdown note
 syncs at its own path, except Obsidian's configuration folder and hidden
-folders. It is offered only while your space has no notes, and a window asks
+folders. It works only while your space has no notes, and a window asks
 first, saying how many notes will be uploaded.
 
 To sync a folder you already have instead, choose it under **Or sync an

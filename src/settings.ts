@@ -402,7 +402,7 @@ export class StoasisSettingTab extends PluginSettingTab {
 							'Choosing another folder merges its notes into the space. '
 						: 'Notes in the folder you choose and its subfolders sync with the space. ' +
 							'Notes already in that folder are added to the space and appear on your other devices. ') +
-					'Whole vault: Every Markdown note in this vault syncs, except Obsidian\'s own settings and hidden folders.',
+					'Whole vault: every Markdown note in this vault syncs, except Obsidian\'s own settings and hidden folders.',
 			)
 			.addDropdown((dropdown) => {
 				dropdown.addOption('', 'Choose a folder');

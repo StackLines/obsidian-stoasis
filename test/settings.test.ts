@@ -342,7 +342,7 @@ describe('settings tab', () => {
 			['Work', 'Work'],
 		]);
 		expect(setting('Or sync an existing folder').desc).toContain(
-			"Every Markdown note in this vault syncs, except Obsidian's own settings and hidden folders.",
+			"every Markdown note in this vault syncs, except Obsidian's own settings and hidden folders.",
 		);
 		expect(names).not.toContain('Sync this folder');
 		expect(names).not.toContain('Space');
