@@ -66,7 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The README and the plugin's Network and privacy text now say what the
   whole-vault sync, the note history, the storage figure and the scan
   progress send and read.
-
 - The saved setting `folder` becomes `mapping`. An existing folder setting is
   read as a folder mapping, so no space is re-keyed.
 
