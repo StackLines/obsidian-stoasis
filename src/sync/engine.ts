@@ -229,7 +229,7 @@ export class SyncEngine {
 	private held = new Set<string>();
 	private deciding = false;
 	private pendingDeletes = new Set<string>();
-	private deleteTimer: ReturnType<typeof setTimeout> | null = null;
+	private deleteTimer: number | null = null;
 	private started = false;
 	/**
 	 * While the first pass loads notes in batches: reconciling creates files
