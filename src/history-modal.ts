@@ -124,7 +124,7 @@ export class HistoryModal extends Modal {
 		}
 		contentEl.createEl('p', {
 			cls: 'setting-item-description',
-			text: 'Restore writes this version into the note as one edit, on every device. The text it replaces stays in the history.',
+			text: 'Restore writes this version into the note as one edit, on every device. The text it replaces is usually kept in the history, once it has been saved as a version.',
 		});
 		new Setting(contentEl)
 			.addButton((button) => button.setButtonText('Back').onClick(() => this.list()))

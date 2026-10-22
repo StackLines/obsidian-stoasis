@@ -272,6 +272,24 @@ const SUBJECT_EXEMPT =
 	/^(?:Merge |Revert "|fixup! |squash! |\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$)/;
 const MAX_SUBJECT_LENGTH = 72;
 
+// Commits already published with a personal address. They are reported by the
+// review that found them and cannot be changed without rewriting published
+// history; every later commit is checked.
+const KNOWN_IDENTITY_COMMITS = new Set(['07517ee', '08d3690']);
+
+/**
+ * Checks an author or committer address: only a no-reply address belongs in
+ * this public history.
+ * @param {string} email
+ * @returns {LineFinding[]}
+ */
+export function checkIdentity(email) {
+	return /^[^@\s]+@(users\.noreply\.github\.com|noreply\.github\.com)$/i.test(email) ||
+		email === 'noreply@github.com'
+		? []
+		: [{ rule: 'commit-identity', excerpt: mask(email), line: 0 }];
+}
+
 /**
  * Scans a commit or tag message: message rules plus every content rule.
  * Returns findings with a 1-based line number.
@@ -534,11 +552,18 @@ function run(argv) {
 		const revs = options.range
 			? [options.range]
 			: ['HEAD', '--branches', '--tags', '--remotes'];
-		const log = git(['log', ...revs, '--format=%H%x1f%B%x1e'], root);
+		const log = git(['log', ...revs, '--format=%H%x1f%ae%x1f%ce%x1f%B%x1e'], root);
 		for (const record of log.split('\x1e')) {
-			const [sha, message] = record.replace(/^\n/, '').split('\x1f');
+			const [sha, author, committer, message] = record.replace(/^\n/, '').split('\x1f');
 			if (!sha || message === undefined) {
 				continue;
+			}
+			if (!KNOWN_IDENTITY_COMMITS.has(sha.slice(0, 7))) {
+				for (const email of [author ?? '', committer ?? '']) {
+					for (const finding of checkIdentity(email)) {
+						report(out, `commit:${sha.slice(0, 8)}`, finding);
+					}
+				}
 			}
 			for (const finding of scanMessage(message, { denylist: denylist.entries })) {
 				report(out, `commit:${sha.slice(0, 8)}`, finding);

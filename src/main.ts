@@ -375,17 +375,13 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			return;
 		}
 		if (this.settings.mapping?.kind === 'vault') {
-			const confirmed = await new ConfirmModal(
-				this.app,
-				'Sync a folder instead of the whole vault?',
-				`The space's notes will be downloaded into "${folder}", under their paths in the space, ` +
-					`and the notes already in "${folder}" will be uploaded as new notes. ` +
-					'Notes in the space are not deleted, but you may end up with copies.',
-				'Sync the folder',
-			).ask();
-			if (!confirmed) {
-				return;
-			}
+			// Notes of a space that starts at the vault root have paths relative to
+			// the root, so a folder cannot be mapped to them; other devices that
+			// follow the root would not know where it went.
+			new Notice(
+				'Stoasis: once a space syncs the whole vault, it can only be synced as the whole vault.',
+			);
+			return;
 		}
 		await this.applyMapping(mapping, create, this.settings.syncEnabled);
 	}

@@ -678,7 +678,7 @@ export class SyncEngine {
 	// Disk → document.
 
 	private async diskCreated(rel: string): Promise<void> {
-		if (!this.vault.exists(this.path(rel))) {
+		if (this.moved || !this.vault.exists(this.path(rel))) {
 			return;
 		}
 		if (this.state.known[rel] !== undefined) {
@@ -835,7 +835,7 @@ export class SyncEngine {
 		const id = this.state.known[rel];
 		// A stop can come while a task waits; a deletion seen after it may be
 		// the synced folder going away, which must not reach other devices.
-		if (this.stopped || id === undefined || this.vault.exists(this.path(rel))) {
+		if (this.stopped || this.moved || id === undefined || this.vault.exists(this.path(rel))) {
 			return;
 		}
 		const map = this.requireMap();
@@ -848,6 +848,10 @@ export class SyncEngine {
 	}
 
 	private diskRenamed(from: string, to: string): void {
+		// Paths of a space that moved are not this device's to write.
+		if (this.moved) {
+			return;
+		}
 		const id = this.state.known[from];
 		if (id === undefined) {
 			// Not a synced note before; if it is one now, it is new.
@@ -1318,7 +1322,7 @@ export class SyncEngine {
 
 	/** Picks up changes made to the folder while the plugin was not running. */
 	private async scanDisk(): Promise<void> {
-		if (this.stopped) {
+		if (this.stopped || this.moved) {
 			return;
 		}
 		const onDisk = new Set<string>();

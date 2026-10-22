@@ -28,8 +28,13 @@ export function describeScanStatus(status: ScanStatus, spaceId: string, now: Dat
 		return [];
 	}
 	const lines: string[] = [];
+	// The deployment-wide count includes other spaces, so a space the server
+	// does not list shows nothing.
 	const space = status.spaces.find((s) => s.spaceId === spaceId);
-	const pending = space === undefined ? status.llm.pending : space.llmPending;
+	if (space === undefined) {
+		return [];
+	}
+	const pending = space.llmPending;
 	lines.push(
 		pending === 0
 			? 'No notes are waiting to be read.'
