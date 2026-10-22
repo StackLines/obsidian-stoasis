@@ -28,6 +28,7 @@ class Device {
 		this.source = new MemoryDocSource(this.hub, memoryStores(this.disk), this.online);
 		this.state = parseEngineState(JSON.parse(JSON.stringify(this.state)));
 		this.engine = new SyncEngine({
+			deleteBatchMs: 1,
 			vault: this.vault,
 			source: this.source,
 			spaceId: SPACE_ID,

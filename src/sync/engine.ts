@@ -45,12 +45,11 @@ export interface VaultAdapter {
 
 /** Added to the notice for a conflict copy: how to choose between it and the note. */
 /**
- * Under the whole vault, one folder going away, a vault restored or an app
- * evicting files can delete many notes at once. This many missing notes, and
- * a quarter of the known ones, are held until the user says to delete them.
+ * One folder going away, a vault restored or an app evicting files can delete
+ * many notes at once, whatever share of the synced notes they are. This many
+ * missing notes are held until the user says to delete them.
  */
 export const MASS_DELETE_MIN = 25;
-const MASS_DELETE_SHARE = 0.25;
 /** An empty vault listing while this many notes are known is held whatever the count. */
 const EMPTY_LISTING_MIN = 5;
 /** Deletion events that arrive within this time are judged together. */
@@ -467,15 +466,8 @@ export class SyncEngine {
 		this.mapping = folderMapping(folder);
 	}
 
-	/** A file left the synced files; under the whole vault, many at once are held. */
+	/** A file left the synced files; many at once are held. */
 	private deletedOnDisk(rel: string): void {
-		if (this.mapping.kind !== 'vault') {
-			void this.enqueue(async () => {
-				await this.diskDeleted(rel);
-				await this.retryClashes();
-			});
-			return;
-		}
 		this.pendingDeletes.add(rel);
 		this.deleteTimer ??= window.setTimeout(() => {
 			this.deleteTimer = null;
@@ -491,22 +483,18 @@ export class SyncEngine {
 	/** Deletes the notes of `rels` that are gone, or holds them when there are too many. */
 	private async deleteOrHold(rels: string[], emptyListing: boolean): Promise<void> {
 		const gone = rels.filter((rel) => this.state.known[rel] !== undefined && !this.vault.exists(this.path(rel)));
-		if (this.mapping.kind === 'vault') {
-			const total = new Set([...this.held, ...gone]).size;
-			const known = Object.keys(this.state.known).length;
-			const tooMany =
-				(total >= MASS_DELETE_MIN && total > known * MASS_DELETE_SHARE) ||
-				(emptyListing && known >= EMPTY_LISTING_MIN);
-			if (this.held.size > 0 || tooMany) {
-				for (const rel of gone) {
-					this.held.add(rel);
-				}
-				if (!this.deciding && this.held.size > 0) {
-					this.deciding = true;
-					this.options.onMassDelete?.(this.held.size);
-				}
-				return;
+		const total = new Set([...this.held, ...gone]).size;
+		const known = Object.keys(this.state.known).length;
+		const tooMany = total >= MASS_DELETE_MIN || (emptyListing && known >= EMPTY_LISTING_MIN);
+		if (this.held.size > 0 || tooMany) {
+			for (const rel of gone) {
+				this.held.add(rel);
 			}
+			if (!this.deciding && this.held.size > 0) {
+				this.deciding = true;
+				this.options.onMassDelete?.(this.held.size);
+			}
+			return;
 		}
 		for (const rel of gone) {
 			await this.diskDeleted(rel);

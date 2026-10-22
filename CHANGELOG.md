@@ -107,6 +107,9 @@ between a conflict copy and its note.
 
 ### Fixed
 
+- Deleting many synced notes at once is held until you confirm, from 25 notes
+  whatever share of the vault they are (it was also required that they be a
+  quarter of it), and for a synced folder as well as the whole vault.
 - Renaming a note so that only the case of its name changes (`note.md` to
   `Note.md`) failed on devices whose file system ignores case, as on macOS,
   iOS and Windows.

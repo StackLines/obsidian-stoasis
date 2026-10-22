@@ -48,6 +48,7 @@ async function device(hub: MemoryHub, writeDelayMs = 1): Promise<Device> {
 	const editors = new EditorSync();
 	const problems: string[] = [];
 	const engine = new SyncEngine({
+		deleteBatchMs: 1,
 		vault,
 		source,
 		spaceId: SPACE_ID,
