@@ -21,6 +21,8 @@ type TestPlugin = StoasisPlugin & {
 	protocolHandlers: Map<string, (p: Record<string, string>) => void>;
 	storedData: unknown;
 	saved: unknown[];
+	commands: { id: string; callback?: () => void }[];
+	domEvents: { el: ContainerEl; type: string; callback: () => void }[];
 };
 
 async function loadedPlugin(storedData: unknown = null): Promise<TestPlugin> {
@@ -79,6 +81,32 @@ describe('plugin load', () => {
 		expect(plugin.settings.serverUrl).toBe('');
 		expect(plugin.settings.mapping).toEqual({ kind: 'folder', path: 'Notes' });
 		expect(plugin.settings.syncEnabled).toBe(false);
+	});
+});
+
+describe('sync status and history', () => {
+	const stored = { activity: { contactAt: 1_000, entries: [{ at: 2_000, direction: 'upload', action: 'edit', path: 'Notes/Plan.md' }] } };
+
+	it('opens from the command and from the status bar, and lists what synced', async () => {
+		const plugin = await loadedPlugin(stored);
+		plugins.push(plugin);
+		const command = plugin.commands.find((c) => c.id === 'sync-status');
+		command?.callback?.();
+		expect(openedModals).toHaveLength(1);
+		const text = JSON.stringify(openedModals[0]?.contentEl);
+		expect(text).toContain('Plan.md');
+		expect(text).toContain('Uploaded, edited');
+		expect(text).toContain('Notes');
+
+		plugin.domEvents.find((e) => e.el === plugin.statusItems[0] && e.type === 'click')?.callback();
+		expect(openedModals).toHaveLength(2);
+	});
+
+	it('forgets the history when the device disconnects', async () => {
+		const plugin = await loadedPlugin({ ...stored, serverUrl: SERVER, deviceKey: 'k', keyId: 'i' });
+		plugins.push(plugin);
+		await plugin.unpair();
+		expect(plugin.settings.activity).toEqual({ entries: [], contactAt: null });
 	});
 });
 

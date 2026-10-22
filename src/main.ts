@@ -38,6 +38,8 @@ import {
 	type SettingsHost,
 	type StoasisSettings,
 } from './settings';
+import { ActivityLog, emptyActivity } from './activity';
+import { ActivityModal } from './activity-modal';
 import { describeRefused, describeStatus, explainStatus, type SyncSnapshot } from './status';
 import { EditorSync } from './sync/binding';
 import type * as Y from 'yjs';
@@ -152,6 +154,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 		this.statusEl = this.addStatusBarItem();
 		this.statusEl.addClass('stoasis-status');
+		this.registerDomEvent(this.statusEl, 'click', () => this.showActivity());
 		this.updateStatus();
 
 		this.registerObsidianProtocolHandler(PROTOCOL_ACTION, (params) => {
@@ -186,6 +189,11 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 				}
 				return true;
 			},
+		});
+		this.addCommand({
+			id: 'sync-status',
+			name: 'Show sync status and history',
+			callback: () => this.showActivity(),
 		});
 		this.addCommand({
 			id: 'note-history',
@@ -256,6 +264,9 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		// Stop the running session now, and any session a start still in
 		// progress creates once it finishes.
 		void this.stopSession();
+		if (this.lastConnection === 'online') {
+			this.activityLog().touchContact(Date.now());
+		}
 		void this.stopSync().then(() => this.saveSettings());
 	}
 
@@ -673,6 +684,20 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	/** Opens the history of a synced note, to look at an earlier version or restore it. */
+	private activityLog(): ActivityLog {
+		return new ActivityLog(this.settings.activity);
+	}
+
+	/** Opens the window with the connection, the last contact and what synced lately. */
+	showActivity(): void {
+		new ActivityModal(this.app, {
+			status: () => explainStatus(this.status()),
+			online: () => this.status().connection === 'online',
+			contactAt: () => this.activityLog().contactAt,
+			entries: () => this.activityLog().entries,
+		}).open();
+	}
+
 	showHistory(file: TFile): void {
 		const engine = this.session?.engine;
 		const api = this.brainApi();
@@ -954,7 +979,15 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		const { installId, pendingRevocations, folderWarnings } = this.settings;
 		// A folder stays; the whole vault is chosen per space, after its check and window.
 		const mapping = this.settings.mapping?.kind === 'folder' ? this.settings.mapping : null;
-		this.settings = { ...DEFAULT_SETTINGS, sync: emptyEngineState(), installId, mapping, pendingRevocations, folderWarnings };
+		this.settings = {
+			...DEFAULT_SETTINGS,
+			sync: emptyEngineState(),
+			activity: emptyActivity(),
+			installId,
+			mapping,
+			pendingRevocations,
+			folderWarnings,
+		};
 		this.incompatibility = '';
 	}
 
@@ -1052,6 +1085,10 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			onRelink: (path) => this.editors.relink(path),
 			onMassDelete: (count) => void this.askAboutDeletes(engine, count),
 			onRootMoved: (meta) => this.followRoot(meta),
+			onActivity: (event) => {
+				this.activityLog().record(event, Date.now());
+				this.saveSoon();
+			},
 		});
 		const session: Session = {
 			source,
@@ -1294,6 +1331,10 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		}
 		this.lastRefused = snapshot.refused;
 		if (snapshot.connection !== this.lastConnection) {
+			if (snapshot.connection === 'online' || this.lastConnection === 'online') {
+				this.activityLog().touchContact(Date.now());
+				this.saveSoon();
+			}
 			this.lastConnection = snapshot.connection;
 			if (snapshot.connection === 'outdated') {
 				new Notice(this.incompatibility || explainStatus(snapshot));

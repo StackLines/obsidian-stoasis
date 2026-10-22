@@ -20,6 +20,7 @@ import {
 } from './paths';
 import { markVaultRooted, META_FIELD, readRootMeta, type RootMeta } from './root';
 import { captureBase, mergeOutsideEdit, replacesMost, setText, type MergeBase } from './text';
+import type { ActivityEvent } from '../activity';
 
 /** The few vault operations the engine needs, with vault-relative paths. */
 export interface VaultAdapter {
@@ -122,6 +123,8 @@ export interface EngineOptions {
 	onRootMoved?: (meta: RootMeta) => void;
 	/** How long deletion events are gathered under the whole vault, to judge them together. */
 	deleteBatchMs?: number;
+	/** Called for each change that went to or came from the space, for the sync history. */
+	onActivity?: (event: ActivityEvent) => void;
 }
 
 /** A link between an open editor and a note's shared text. */
@@ -717,6 +720,7 @@ export class SyncEngine {
 		}
 		this.state.known[rel] = id;
 		this.save();
+		this.activity('upload', 'new', rel);
 		await this.loadNote(note);
 		return id;
 	}
@@ -844,6 +848,7 @@ export class SyncEngine {
 		}
 		delete this.state.known[rel];
 		this.save();
+		this.activity('upload', 'delete', rel);
 		await this.forget(id);
 	}
 
@@ -873,6 +878,7 @@ export class SyncEngine {
 		delete this.state.known[from];
 		this.state.known[to] = id;
 		this.save();
+		this.activity('upload', 'rename', to, from);
 	}
 
 	// Document → disk.
@@ -913,7 +919,7 @@ export class SyncEngine {
 	 * `expected`, writes only over that text and returns whether it did.
 	 */
 	private async writeFile(path: string, note: Note, expected?: string): Promise<boolean> {
-		const written: { base?: MergeBase } = {};
+		const written: { base?: MergeBase; changed?: boolean } = {};
 		await this.vault.process(path, (current) => {
 			if (expected !== undefined && current !== expected) {
 				return current;
@@ -925,12 +931,16 @@ export class SyncEngine {
 				this.mergeDisk(note, current);
 			}
 			written.base = captureBase(note.open.doc, NOTE_FIELD);
+			written.changed = written.base.text !== current;
 			return written.base.text;
 		});
 		if (written.base === undefined) {
 			return false;
 		}
 		this.keepBase(note, written.base);
+		if (written.changed === true) {
+			this.noteActivity('download', 'edit', note);
+		}
 		return true;
 	}
 
@@ -941,6 +951,7 @@ export class SyncEngine {
 		this.state.known[rel] = note.id;
 		this.keepBase(note, base);
 		this.save();
+		this.activity('download', 'new', rel);
 	}
 
 	/**
@@ -1044,6 +1055,7 @@ export class SyncEngine {
 					continue;
 				}
 				await this.vault.trash(path);
+				this.activity('download', 'delete', rel);
 			}
 			delete known[rel];
 			this.save();
@@ -1249,6 +1261,7 @@ export class SyncEngine {
 						indexed.set(await this.addLocalNote(spare), spare);
 					}
 					await this.moveFile(rel, target);
+					this.activity('download', 'rename', target, rel);
 					progress = true;
 				}
 			}
@@ -1379,6 +1392,12 @@ export class SyncEngine {
 		const observer = (_event: Y.YTextEvent, { local, origin }: Y.Transaction) => {
 			if (local || origin === ENGINE) {
 				this.markDirty(note);
+				if (note.base !== null) {
+					this.noteActivity('upload', 'edit', note);
+				}
+			} else if (note.editors > 0 && !this.stopped) {
+				// A closed note is reported when it is written to its file.
+				this.noteActivity('download', 'edit', note);
 			}
 			if (origin !== ENGINE && note.editors === 0 && !this.stopped) {
 				this.scheduleWrite(note);
@@ -1403,6 +1422,21 @@ export class SyncEngine {
 		}
 		if ((await open.store.get(DIRTY_KEY)) === '1') {
 			note.dirty = true;
+		}
+	}
+
+	private activity(direction: ActivityEvent['direction'], action: ActivityEvent['action'], rel: string, from?: string): void {
+		const event: ActivityEvent = { direction, action, path: this.path(rel) };
+		if (from !== undefined) {
+			event.from = this.path(from);
+		}
+		this.options.onActivity?.(event);
+	}
+
+	private noteActivity(direction: ActivityEvent['direction'], action: ActivityEvent['action'], note: Note): void {
+		const rel = this.relOf(note.id);
+		if (rel !== null) {
+			this.activity(direction, action, rel);
 		}
 	}
 

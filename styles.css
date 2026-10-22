@@ -8,6 +8,10 @@
 	color: var(--text-muted);
 }
 
+.stoasis-status {
+	cursor: pointer;
+}
+
 .stoasis-error {
 	color: var(--text-error);
 }
@@ -34,4 +38,25 @@
 
 .stoasis-diff-skip {
 	color: var(--text-muted);
+}
+
+.stoasis-activity {
+	max-height: 50vh;
+	overflow-y: auto;
+}
+
+.stoasis-activity table {
+	width: 100%;
+	font-size: var(--font-smaller);
+}
+
+.stoasis-activity th {
+	text-align: left;
+	position: sticky;
+	top: 0;
+	background-color: var(--background-primary);
+}
+
+.stoasis-activity td {
+	overflow-wrap: anywhere;
 }

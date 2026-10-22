@@ -42,6 +42,7 @@ The name joins *stoa*, the covered walkway where people met to think together, w
 | Syncing the whole vault, with a guard against mass deletions | unreleased |
 | Note history: comparing an earlier version and restoring it | unreleased |
 | Space storage and scan progress in the Brain settings | unreleased |
+| Sync status and history: last server contact, last note synced, what went up and down | unreleased |
 | Offline editing with merge on reconnect | shipped |
 | Edits made outside Obsidian merged with edits from other devices | shipped |
 | Comparing a conflict copy with its note and keeping one of them | shipped |
@@ -255,6 +256,18 @@ case; nor can notes in two folders named that way. Such a device keeps the one
 it has, skips the other with a warning, and syncs every other note. The
 skipped note stays on your server and your other devices, and arrives once one
 of the two is renamed or deleted, on any device.
+
+### Sync status and history
+
+Run **Show sync status and history** from the command palette, click the
+status bar, or choose **Sync history** in the settings tab. The window shows
+the connection, when the server was last reached, the note synced last, and
+the last 500 changes that went up to or came down from the space, newest
+first: date and time, whether it was uploaded or downloaded and what kind of
+change (edited, new, renamed, deleted), the note's name and its folder. A burst
+of edits to one note is one line. The list is kept on this device, holds only
+names and paths, never the text of a note, and is cleared when you disconnect.
+Nothing is added on the server for it.
 
 ### Note history
 
