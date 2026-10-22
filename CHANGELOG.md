@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-23
+
 ### Added
 
 - A window with the sync status and history: when the server was last reached,
