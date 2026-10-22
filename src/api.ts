@@ -115,6 +115,26 @@ export interface ScanStatus {
 	spaces: Array<{ spaceId: string; scanMode: ScanMode; llmPending: number }>;
 }
 
+/** One saved version of a note. The text comes only from `NotesApi.noteVersion`. */
+export interface NoteVersion {
+	version: number;
+	createdAt: string;
+	/** `person`, `agent` or `scanner`; other kinds may come later. */
+	actorKind: string;
+	/** For display: the server decides how much of an identity it shows. */
+	actorLabel: string;
+	/** Why it was cut: `idle`, `manual`, `agent`, `scan` or `restore`; read an unknown value as an edit. */
+	reason: string;
+	/** The stored text's size in bytes; 0 when the server left it out. */
+	size: number;
+}
+
+export interface VersionPage {
+	versions: NoteVersion[];
+	/** Pass as `before` for the next page; null on the last. */
+	nextBefore: number | null;
+}
+
 export interface ScanSettings {
 	scanEnabled: boolean;
 	operatorEnabled: boolean;
@@ -210,6 +230,31 @@ export class NotesApi {
 	/** Creates the personal space, or returns the existing one. */
 	async ensurePersonalSpace(name: string): Promise<Space> {
 		return readSpace(await this.call('POST', '/spaces', { name, kind: 'personal' }));
+	}
+
+	/** A note's history, newest first, without text. */
+	async noteVersions(noteId: string, before: number | null = null, limit = 50): Promise<VersionPage> {
+		const query = before === null ? `limit=${limit}` : `limit=${limit}&before=${before}`;
+		const body = await this.call('GET', `/notes/${encodeURIComponent(noteId)}/versions?${query}`);
+		const versions = body['versions'];
+		if (!Array.isArray(versions)) {
+			throw new ApiError('unexpected', 200);
+		}
+		const next = body['next_before'];
+		return {
+			versions: versions.map((v) => readVersion(asRecord(v))),
+			nextBefore: typeof next === 'number' && Number.isInteger(next) ? next : null,
+		};
+	}
+
+	/** One version of a note with its full text, frontmatter included. */
+	async noteVersion(noteId: string, version: number): Promise<NoteVersion & { text: string }> {
+		const body = await this.call('GET', `/notes/${encodeURIComponent(noteId)}/versions/${version}`);
+		const text = body['text'];
+		if (typeof text !== 'string') {
+			throw new ApiError('unexpected', 200);
+		}
+		return { ...readVersion(body), text };
 	}
 
 	async scanSettings(): Promise<ScanSettings> {
@@ -422,6 +467,18 @@ function readUsage(value: unknown): SpaceUsage | null {
 		derivedBytes: bytes('derived_bytes') ?? 0,
 		totalBytes,
 		quotaBytes,
+	};
+}
+
+function readVersion(body: Record<string, unknown>): NoteVersion {
+	const size = body['size'];
+	return {
+		version: requireNumber(body, 'version'),
+		createdAt: requireString(body, 'created_at'),
+		actorKind: optionalString(body, 'actor_kind'),
+		actorLabel: optionalString(body, 'actor_label'),
+		reason: optionalString(body, 'reason'),
+		size: typeof size === 'number' && Number.isFinite(size) ? size : 0,
 	};
 }
 
