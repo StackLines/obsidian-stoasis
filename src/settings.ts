@@ -1,4 +1,5 @@
 import { describeUsage } from './usage';
+import { describeScanStatus } from './scan-status';
 import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import type { ScanMode } from './api';
 import { Brain, describeScanModes, type BrainApi } from './brain';
@@ -495,6 +496,12 @@ export class StoasisSettingTab extends PluginSettingTab {
 					await this.brain.setScanEnabled(api, value);
 				}),
 			);
+
+		const progress =
+			this.brain.status === null ? [] : describeScanStatus(this.brain.status, settings.spaceId, new Date());
+		if (progress.length > 0) {
+			new Setting(containerEl).setName('Scan progress').setDesc(progress.join(' '));
+		}
 
 		const space = view.space;
 		// Any role may read the space's usage; a server that does not report it shows nothing.
