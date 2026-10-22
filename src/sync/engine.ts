@@ -175,6 +175,8 @@ interface Note {
 
 /** Transaction origin for changes the engine makes itself. */
 const ENGINE = Symbol('stoasis-engine');
+/** The origin of a restored version: an edit like a person's, so every device merges it and the file is written. */
+const RESTORE = Symbol('stoasis-restore');
 const BASE_KEY = 'base';
 const DIRTY_KEY = 'dirty';
 /** How many earlier bases a note keeps in memory. */
@@ -508,6 +510,49 @@ export class SyncEngine {
 	noteAt(path: string): string | undefined {
 		const rel = this.relative(path);
 		return rel === null ? undefined : this.state.known[rel];
+	}
+
+	/** The synced text of the note at `path` as it stands now, or null when the file is not synced. */
+	async noteText(path: string): Promise<string | null> {
+		const rel = this.relative(path);
+		const id = rel === null ? undefined : this.state.known[rel];
+		if (id === undefined || this.stopped) {
+			return null;
+		}
+		let text: string | null = null;
+		await this.enqueue(async () => {
+			const note = await this.note(id);
+			await note.open.store.loaded;
+			text = note.text.toJSON();
+		});
+		return text;
+	}
+
+	/**
+	 * Writes `text`, an older version, into the note at `path` as one edit that
+	 * every device merges. With `expected`, only when the note still reads that
+	 * text. Returns whether it was written.
+	 */
+	async restore(path: string, text: string, expected?: string): Promise<boolean> {
+		const rel = this.relative(path);
+		const id = rel === null ? undefined : this.state.known[rel];
+		if (id === undefined || this.stopped) {
+			return false;
+		}
+		let written = false;
+		await this.enqueue(async () => {
+			const note = await this.note(id);
+			await note.open.store.loaded;
+			const current = note.text.toJSON();
+			if (expected !== undefined && current !== expected) {
+				return;
+			}
+			if (current !== text) {
+				note.open.doc.transact(() => setText(note.text, text), RESTORE);
+			}
+			written = true;
+		});
+		return written;
 	}
 
 	/**

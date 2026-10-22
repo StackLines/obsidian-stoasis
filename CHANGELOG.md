@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   without it, and a failed read keeps what was shown. It carries counts and
   times only. Tested with simulated settings; not yet tested in Obsidian
   itself.
+- **Stoasis: Note history**, a command (and an entry in the editor menu) for a
+  synced note. It lists the note's earlier versions with when, who and why,
+  shows how one differs from the note now, and **Restore** writes it back as
+  one ordinary edit that every device merges; the text it replaces stays in
+  the history. A note that changed while the window was open is compared
+  again instead of overwritten. Tested with a real sync server and simulated
+  editors, and in two desktop Obsidian instances with the note open on both;
+  not tested on iOS.
 - **Whole vault**: the space can map to the entire vault instead of one
   folder. Every Markdown note syncs, at the same path in the space, except
   Obsidian's configuration folder and hidden folders. Choose **Whole vault**
