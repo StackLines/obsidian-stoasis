@@ -17,12 +17,10 @@
 
 The name joins *stoa*, the covered walkway where people met to think together, with *oasis*: a shared oasis for your notes.
 
-> **Early development.** Version 0.2.0 is a preview that syncs. It
-> pairs with your server, keeps one folder in step with your personal
-> space, offline edits included, and tags a note when you ask. The next
-> version can also sync the whole vault and restore earlier versions of a
-> note. Sharing is
-> not available yet. See [Status](#status).
+> **Early development.** Version 0.3.0 is a preview that syncs. It
+> pairs with your server, keeps one folder or the whole vault in step with
+> your personal space, offline edits included, restores earlier versions of a
+> note, and tags a note when you ask. Sharing is not available yet. See [Status](#status).
 
 ## What it is for
 
@@ -321,7 +319,7 @@ not offer these settings, the section is not shown.
 
 ## Status
 
-**Current version:** `0.2.0`
+**Current version:** `0.3.0`
 
 What works today:
 
@@ -356,11 +354,11 @@ See the [changelog](CHANGELOG.md) for release notes.
 
 1. **Foundations.** Build, release and a plugin that loads and shows its state.
 2. **Live sync.** Pairing, folders mapped to your server, real-time editing
-   and offline changes. *Version 0.2.0 covers one folder, with conflict
-   review and folder warnings. The next version adds the whole vault and note
-   history; attachments follow.*
+   and offline changes. *Version 0.3.0 covers one folder or the whole
+   vault, with conflict review, folder warnings and note history; attachments
+   follow.*
 3. **Tagging.** Automatic frontmatter tags for synced and unsynced notes.
-   *Version 0.2.0 tags a note when you ask, and has the Brain settings.*
+   *Version 0.3.0 tags a note when you ask, and has the Brain settings.*
 4. **Sharing.** Shared folders with roles.
 
 ## Development
