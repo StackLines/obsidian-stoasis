@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Control, ContainerEl, RenderedItem } from './stubs/obsidian';
 import {
 	DEFAULT_SETTINGS,
@@ -12,8 +12,8 @@ import {
 } from '../src/settings';
 import { folderMapping, WHOLE_VAULT } from '../src/sync/paths';
 import type { SyncSnapshot } from '../src/status';
-import { ApiError, type ScanMode, type ScanSettings, type Space } from '../src/api';
-import { Brain, type BrainApi } from '../src/brain';
+import { ApiError, type ScanMode, type ScanSettings, type ScanStatus, type Space } from '../src/api';
+import { Brain, STATUS_MIN_MS, type BrainApi } from '../src/brain';
 
 describe('default settings', () => {
 	it('start in the not paired state', () => {
@@ -111,6 +111,18 @@ class FakeBrainApi implements BrainApi {
 			throw new ApiError('not-found', 404);
 		}
 		return space;
+	}
+	/** What the status endpoint says; null answers 404, as a server without it does. */
+	status: ScanStatus | null = null;
+	statusCalls = 0;
+	scanStatus(): Promise<ScanStatus> {
+		this.statusCalls++;
+		return this.answer('scanStatus', () => {
+			if (this.status === null) {
+				throw new ApiError('not-found', 404);
+			}
+			return structuredClone(this.status);
+		});
 	}
 	scanSettings(): Promise<ScanSettings> {
 		this.calls.push('scan settings');
@@ -686,5 +698,134 @@ describe('Brain, with an answer to a change that arrives after a reload', () => 
 		refuse(new ApiError('forbidden', 403));
 		await second;
 		expect(brain.view).toMatchObject({ kind: 'ready', owner: false, message: "Only the space's owner can change this." });
+	});
+});
+
+describe('Brain, with the scanner status', () => {
+	const STATUS: ScanStatus = {
+		scanEnabled: true,
+		operatorEnabled: true,
+		lastRuns: {
+			base: null,
+			deterministic: null,
+			llm: { outcome: 'ok', startedAt: '2026-10-16T10:00:00+00:00', finishedAt: '2026-10-16T10:00:04+00:00' },
+		},
+		llm: { pending: 757, paused: true, pausedReason: 'rate_limited', pausedSince: '2026-10-16T10:05:00+00:00' },
+		spaces: [{ spaceId: 's1', scanMode: 'auto', llmPending: 12 }],
+	};
+
+	function scanning(): FakeBrainApi {
+		const api = new FakeBrainApi();
+		api.scan.scanEnabled = true;
+		api.status = structuredClone(STATUS);
+		return api;
+	}
+
+	it('reads the status once the section is loaded, and gives it to the screen', async () => {
+		const api = scanning();
+		let changes = 0;
+		const brain = new Brain(() => changes++);
+		await brain.load(api, 'key', 's1');
+		await vi.waitFor(() => expect(brain.status).not.toBeNull());
+		expect(api.statusCalls).toBe(1);
+		expect(brain.status?.llm.pending).toBe(757);
+		expect(changes).toBeGreaterThan(1);
+		brain.reset();
+	});
+
+	it('asks again once a minute while the section is open, and never faster', async () => {
+		vi.useFakeTimers();
+		try {
+			const api = scanning();
+			const brain = new Brain(() => {});
+			await brain.load(api, 'key', 's1');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(api.statusCalls).toBe(1);
+
+			// Drawing the tab again, or loading again, does not ask.
+			await brain.load(api, 'key', 's1', true);
+			await vi.advanceTimersByTimeAsync(STATUS_MIN_MS - 1000);
+			expect(api.statusCalls).toBeLessThanOrEqual(2);
+			const early = api.statusCalls;
+			await vi.advanceTimersByTimeAsync(STATUS_MIN_MS * 3);
+			// Never more than one request in any minute.
+			expect(api.statusCalls - early).toBeLessThanOrEqual(4);
+			expect(api.statusCalls).toBeGreaterThan(early);
+
+			const before = api.statusCalls;
+			brain.reset();
+			await vi.advanceTimersByTimeAsync(STATUS_MIN_MS * 5);
+			expect(api.statusCalls).toBe(before);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not ask while scanning is off', async () => {
+		vi.useFakeTimers();
+		try {
+			const api = scanning();
+			api.scan.scanEnabled = false;
+			const brain = new Brain(() => {});
+			await brain.load(api, 'key', 's1');
+			await vi.advanceTimersByTimeAsync(STATUS_MIN_MS * 3);
+			expect(api.statusCalls).toBe(0);
+			brain.reset();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('hides the status for a server that answers 404, and stops asking', async () => {
+		vi.useFakeTimers();
+		try {
+			const api = scanning();
+			api.status = null;
+			const brain = new Brain(() => {});
+			await brain.load(api, 'key', 's1');
+			await vi.advanceTimersByTimeAsync(STATUS_MIN_MS * 3);
+			expect(brain.status).toBeNull();
+			expect(api.statusCalls).toBe(1);
+			expect(brain.view.kind).toBe('ready');
+			brain.reset();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('keeps the last status when the server cannot be reached', async () => {
+		vi.useFakeTimers();
+		try {
+			const api = scanning();
+			const brain = new Brain(() => {});
+			await brain.load(api, 'key', 's1');
+			await vi.advanceTimersByTimeAsync(0);
+			api.fail.scanStatus = new ApiError('network', 0);
+			await vi.advanceTimersByTimeAsync(STATUS_MIN_MS);
+			expect(api.statusCalls).toBe(2);
+			expect(brain.status?.llm.pending).toBe(757);
+			brain.reset();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('shows the progress in the settings tab, and nothing for a server without it', async () => {
+		const host = paired();
+		host.brain = scanning();
+		const { items } = render(host);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const progress = items().find((i) => i.kind === 'setting' && i.name === 'Scan progress');
+		expect(progress?.desc).toContain('12 notes are waiting to be read.');
+		expect(progress?.desc).toContain('paused while the server is being rate limited');
+		expect(progress?.desc).not.toContain('757');
+
+		const bare = paired();
+		const noStatus = scanning();
+		noStatus.status = null;
+		bare.brain = noStatus;
+		const view = render(bare);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(view.items().some((i) => i.name === 'Scan progress')).toBe(false);
 	});
 });

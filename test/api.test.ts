@@ -29,6 +29,48 @@ async function failure(promise: Promise<unknown>): Promise<ApiError> {
 	throw new Error('Expected the call to fail');
 }
 
+describe('NotesApi scan status', () => {
+	const body = {
+		scan_enabled: true,
+		operator_enabled: true,
+		last_runs: {
+			base: null,
+			deterministic: { outcome: 'ok', started_at: '2026-10-16T10:00:00+00:00', finished_at: '2026-10-16T10:00:04+00:00' },
+			llm: { outcome: null, started_at: '2026-10-16T10:10:00+00:00', finished_at: null },
+		},
+		llm: { pending: 757, paused: true, paused_reason: 'rate_limited', paused_since: '2026-10-16T10:05:00+00:00' },
+		spaces: [{ space_id: 's1', scan_mode: 'auto', llm_pending: 757 }, { space_id: 3, scan_mode: 'auto' }],
+	};
+
+	it('reads the status, with a run in progress and a paused stage', async () => {
+		const keyed = new NotesApi(async () => json(200, body), SERVER, 'key');
+		expect(await keyed.scanStatus()).toEqual({
+			scanEnabled: true,
+			operatorEnabled: true,
+			lastRuns: {
+				base: null,
+				deterministic: { outcome: 'ok', startedAt: '2026-10-16T10:00:00+00:00', finishedAt: '2026-10-16T10:00:04+00:00' },
+				llm: { outcome: null, startedAt: '2026-10-16T10:10:00+00:00', finishedAt: null },
+			},
+			llm: { pending: 757, paused: true, pausedReason: 'rate_limited', pausedSince: '2026-10-16T10:05:00+00:00' },
+			spaces: [{ spaceId: 's1', scanMode: 'auto', llmPending: 757 }],
+		});
+	});
+
+	it('reads parts the server left out as nothing, and reports a 404', async () => {
+		const bare = new NotesApi(async () => json(200, {}), SERVER, 'key');
+		expect(await bare.scanStatus()).toEqual({
+			scanEnabled: false,
+			operatorEnabled: false,
+			lastRuns: { base: null, deterministic: null, llm: null },
+			llm: { pending: 0, paused: false, pausedReason: null, pausedSince: null },
+			spaces: [],
+		});
+		const missing = new NotesApi(async () => json(404, { error: 'not_found' }), SERVER, 'key');
+		expect((await failure(missing.scanStatus())).kind).toBe('not-found');
+	});
+});
+
 describe('NotesApi', () => {
 	it('reads the version without a credential', async () => {
 		const { api, sent } = client(() => json(200, { api: 1, min_plugin: '0.1.0' }));
