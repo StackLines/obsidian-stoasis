@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Pairing and loading the space now pick the space you own. A personal space
+  that another person shared with you could be chosen when it was listed first,
+  and the whole vault would have been uploaded into it. If you own no space,
+  one is created.
+
 ## [0.3.0] - 2026-10-22
 
 ### Added
