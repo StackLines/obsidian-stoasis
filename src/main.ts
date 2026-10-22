@@ -10,7 +10,7 @@ import {
 	TFolder,
 	type Editor,
 } from 'obsidian';
-import { ApiError, NotesApi } from './api';
+import { ApiError, NotesApi, type Space } from './api';
 import { HistoryModal } from './history-modal';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
@@ -1000,6 +1000,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 				this.settings.spaceId = space.id;
 				this.settings.sync = emptyEngineState();
 			}
+			this.settings.verifiedSpaceId = space.id;
 			this.settings.spaceName = space.name;
 			return true;
 		} catch (error) {
@@ -1009,6 +1010,43 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			}
 			return false;
 		}
+	}
+
+	/**
+	 * Plugin 0.3.0 could link a device to a space another person shared with it.
+	 * Checks once per space that the stored one is this person's own. 'wrong'
+	 * switches sync off and forgets the space, leaving the files as they are.
+	 */
+	private async verifySpace(): Promise<'ok' | 'wrong' | 'unknown'> {
+		const settings = this.settings;
+		const api = new NotesApi(obsidianHttp, settings.serverUrl, settings.deviceKey);
+		let spaces: Space[];
+		try {
+			spaces = await api.listSpaces();
+		} catch (error) {
+			if (error instanceof ApiError && error.kind === 'unauthenticated') {
+				new Notice(describeApiError(error));
+			}
+			return 'unknown';
+		}
+		const space = spaces.find((candidate) => candidate.id === settings.spaceId);
+		if (space?.kind === 'personal' && space.role === 'owner') {
+			settings.verifiedSpaceId = space.id;
+			return 'ok';
+		}
+		settings.spaceId = '';
+		settings.spaceName = '';
+		settings.verifiedSpaceId = '';
+		settings.sync = emptyEngineState();
+		settings.syncEnabled = false;
+		await this.saveSettings();
+		new Notice(
+			'Stoasis: this device was linked to a space that another person shared with you, which version 0.3.0 could do by mistake. ' +
+				'Sync is off and nothing was deleted. Check the notes in the synced folder, then turn sync on to link this device to your own space; ' +
+				'notes in the folder are uploaded to it.',
+			0,
+		);
+		return 'wrong';
 	}
 
 	// Sync.
@@ -1048,6 +1086,25 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		}
 		if (settings.spaceId === '') {
 			if (!(await this.loadSpace())) {
+				this.retryTimer = window.setTimeout(() => {
+					this.retryTimer = null;
+					this.restartSync();
+				}, SPACE_RETRY_MS);
+				this.updateStatus();
+				return;
+			}
+			await this.saveSettings();
+		}
+		if (this.unloaded) {
+			return;
+		}
+		if (settings.verifiedSpaceId !== settings.spaceId) {
+			const verdict = await this.verifySpace();
+			if (verdict === 'wrong') {
+				this.updateStatus();
+				return;
+			}
+			if (verdict === 'unknown') {
 				this.retryTimer = window.setTimeout(() => {
 					this.retryTimer = null;
 					this.restartSync();

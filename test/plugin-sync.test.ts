@@ -568,3 +568,30 @@ describe('note history', () => {
 		expect(notices.join(' ')).toContain('not synced');
 	});
 });
+
+describe('a device that 0.3.0 linked to a space shared with the person', () => {
+	it('stops syncing, forgets the space and keeps the notes', async () => {
+		const a = await device('ABCD2345', 'Notes', { 'Notes/Mine.md': 'mine' });
+		await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+		await a.saveSettings();
+		const stored = {
+			...(a as unknown as { storedData: Record<string, unknown> }).storedData,
+			spaceId: 'shared-space',
+			verifiedSpaceId: '',
+		};
+		const { app } = a;
+		a.onunload();
+		control.spaces.unshift({ space_id: 'shared-space', name: 'Theirs', kind: 'personal', role: 'editor', scan_mode: 'off', archived: false });
+
+		notices.length = 0;
+		const again = new StoasisPlugin(app, { id: 'stoasis', version: '0.3.3' } as never) as TestPlugin;
+		plugins.push(again);
+		(again as unknown as { storedData: unknown }).storedData = stored;
+		await again.onload();
+		app.workspace.ready();
+		await eventually(() => expect(again.settings.syncEnabled).toBe(false), 8000);
+		expect(again.settings.spaceId).toBe('');
+		expect(notices.join(' ')).toContain('shared with you');
+		expect(app.vault.files.get('Notes/Mine.md')).toBe('mine');
+	}, 40_000);
+});

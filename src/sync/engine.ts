@@ -55,6 +55,12 @@ export const MASS_DELETE_MIN = 25;
 const EMPTY_LISTING_MIN = 5;
 /** Deletion events that arrive within this time are judged together. */
 const DELETE_BATCH_MS = 250;
+/**
+ * Deletions applied within this time count towards `MASS_DELETE_MIN` as well,
+ * so a slow trickle of them, such as a cloud app evicting files one by one,
+ * is held like a sudden one.
+ */
+const DELETE_WINDOW_MS = 60 * 60_000;
 
 const COMPARE_HINT = ' Open the copy and run "Compare with the synced note" to keep one of them.';
 
@@ -238,6 +244,10 @@ export class SyncEngine {
 	private stopped = false;
 	/** Notes missing from disk under the whole vault, not yet deleted from the space. */
 	private held = new Set<string>();
+	/** The held notes the user was asked about; only these are deleted on a yes. */
+	private asked = new Set<string>();
+	/** When notes were last deleted from the space for missing on disk, in ms. */
+	private recentDeletes: number[] = [];
 	private deciding = false;
 	private pendingDeletes = new Set<string>();
 	private deleteTimer: number | null = null;
@@ -486,33 +496,57 @@ export class SyncEngine {
 	/** Deletes the notes of `rels` that are gone, or holds them when there are too many. */
 	private async deleteOrHold(rels: string[], emptyListing: boolean): Promise<void> {
 		const gone = rels.filter((rel) => this.state.known[rel] !== undefined && !this.vault.exists(this.path(rel)));
-		const total = new Set([...this.held, ...gone]).size;
+		const now = this.now().getTime();
+		this.recentDeletes = this.recentDeletes.filter((at) => now - at < DELETE_WINDOW_MS);
+		const total = new Set([...this.held, ...gone]).size + this.recentDeletes.length;
 		const known = Object.keys(this.state.known).length;
 		const tooMany = total >= MASS_DELETE_MIN || (emptyListing && known >= EMPTY_LISTING_MIN);
 		if (this.held.size > 0 || tooMany) {
 			for (const rel of gone) {
 				this.held.add(rel);
 			}
-			if (!this.deciding && this.held.size > 0) {
-				this.deciding = true;
-				this.options.onMassDelete?.(this.held.size);
-			}
+			this.askAboutHeld();
 			return;
 		}
 		for (const rel of gone) {
+			this.recentDeletes.push(now);
 			await this.diskDeleted(rel);
 		}
 	}
 
+	/** Asks about the notes held, once at a time; later ones wait for their own question. */
+	private askAboutHeld(): void {
+		if (this.deciding) {
+			return;
+		}
+		for (const rel of [...this.held]) {
+			// Put back meanwhile: nothing to delete.
+			if (this.vault.exists(this.path(rel)) || this.state.known[rel] === undefined) {
+				this.held.delete(rel);
+			}
+		}
+		if (this.held.size === 0) {
+			return;
+		}
+		this.deciding = true;
+		this.asked = new Set(this.held);
+		this.options.onMassDelete?.(this.asked.size);
+	}
+
 	/** Deletes the held notes from the space, as the user asked. */
 	releaseHeld(): void {
-		const held = [...this.held];
-		this.held.clear();
+		const asked = [...this.asked];
+		for (const rel of asked) {
+			this.held.delete(rel);
+		}
+		this.asked.clear();
 		this.deciding = false;
 		void this.enqueue(async () => {
-			for (const rel of held) {
+			for (const rel of asked) {
 				await this.diskDeleted(rel);
 			}
+			// Notes that went missing while the question was open were not part of it.
+			this.askAboutHeld();
 		});
 	}
 

@@ -21,6 +21,8 @@ export interface StoasisSettings {
 	/** The personal space synced with `mapping`. */
 	spaceId: string;
 	spaceName: string;
+	/** The space last confirmed to be this person's own; 0.3.0 could store a shared one. */
+	verifiedSpaceId: string;
 	/** What the space is synced with, a folder or the whole vault; null until chosen. */
 	mapping: Mapping | null;
 	syncEnabled: boolean;
@@ -50,6 +52,7 @@ export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
 	personName: '',
 	spaceId: '',
 	spaceName: '',
+	verifiedSpaceId: '',
 	mapping: null,
 	syncEnabled: false,
 	installId: '',
@@ -67,6 +70,7 @@ const STRING_FIELDS = [
 	'personName',
 	'spaceId',
 	'spaceName',
+	'verifiedSpaceId',
 	'installId',
 ] as const;
 
