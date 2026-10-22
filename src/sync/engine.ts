@@ -18,6 +18,7 @@ import {
 	toVaultPath,
 	type Mapping,
 } from './paths';
+import { markVaultRooted, META_FIELD, readRootMeta, type RootMeta } from './root';
 import { captureBase, mergeOutsideEdit, replacesMost, setText, type MergeBase } from './text';
 
 /** The few vault operations the engine needs, with vault-relative paths. */
@@ -114,6 +115,12 @@ export interface EngineOptions {
 	 * many to delete without asking. Nothing is deleted until `releaseHeld`.
 	 */
 	onMassDelete?: (count: number) => void;
+	/**
+	 * Called, once, when the space now starts at the vault root while this
+	 * device syncs a folder. Nothing is changed in the vault or the space from
+	 * then on: the device must be moved to the new root first.
+	 */
+	onRootMoved?: (meta: RootMeta) => void;
 	/** How long deletion events are gathered under the whole vault, to judge them together. */
 	deleteBatchMs?: number;
 }
@@ -233,6 +240,8 @@ export class SyncEngine {
 	private pendingDeletes = new Set<string>();
 	private deleteTimer: number | null = null;
 	private started = false;
+	/** Set once the space moved to the vault root under a folder mapping: the engine does nothing more. */
+	private moved = false;
 	/**
 	 * While the first pass loads notes in batches: reconciling creates files
 	 * only for notes loaded already, and leaves the others to a later pass.
@@ -297,13 +306,28 @@ export class SyncEngine {
 		}
 		const map = index.doc.getMap<unknown>(INDEX_FIELD);
 		this.map = map;
+		const metaMap = index.doc.getMap<unknown>(META_FIELD);
+		const onMeta = () => this.checkRoot();
+		metaMap.observe(onMeta);
+		const unobserveMeta = () => metaMap.unobserve(onMeta);
+		if (this.checkRoot()) {
+			unobserveMeta();
+			return;
+		}
+		if (this.mapping.kind === 'vault') {
+			// A space synced from the whole vault says so, for devices that join later.
+			markVaultRooted(index.doc, ENGINE);
+		}
 		const onIndex = (_event: Y.YMapEvent<unknown>, tr: Y.Transaction) => {
 			if (tr.origin !== ENGINE) {
 				void this.enqueue(() => this.reconcile());
 			}
 		};
 		map.observe(onIndex);
-		this.unobserveIndex = () => map.unobserve(onIndex);
+		this.unobserveIndex = () => {
+			map.unobserve(onIndex);
+			unobserveMeta();
+		};
 		this.unwatchSource = this.source.onChange(() => this.confirmNotes());
 
 		// Load the notes in batches, each its own task, and reconcile after each,
@@ -352,6 +376,15 @@ export class SyncEngine {
 			await index.store.set(SEEDED_KEY, '1');
 			this.started = true;
 		});
+	}
+
+	/** The root marker of the space and how many entries it lists; null before the first pass. */
+	spaceSummary(): { meta: RootMeta | null; notes: number } | null {
+		const doc = this.index?.doc;
+		if (doc === undefined || !this.started) {
+			return null;
+		}
+		return { meta: readRootMeta(doc), notes: doc.getMap<unknown>(INDEX_FIELD).size };
 	}
 
 	/** Stops all work; settles once the task running now, if any, is done. */
@@ -953,8 +986,23 @@ export class SyncEngine {
 	}
 
 	/** Brings the folder in line with the space index. */
+	/** Whether the space starts at the vault root while this device syncs a folder; tells the owner once. */
+	private checkRoot(): boolean {
+		if (this.moved) {
+			return true;
+		}
+		const doc = this.index?.doc;
+		const meta = doc === undefined ? null : readRootMeta(doc);
+		if (this.mapping.kind !== 'folder' || meta === null) {
+			return false;
+		}
+		this.moved = true;
+		this.options.onRootMoved?.(meta);
+		return true;
+	}
+
 	private async reconcile(): Promise<void> {
-		if (this.stopped) {
+		if (this.stopped || this.moved) {
 			return;
 		}
 		this.normalizeIndex();
@@ -1451,7 +1499,7 @@ export class SyncEngine {
 
 	private enqueue(task: () => Promise<void>): Promise<void> {
 		const run = this.queue.then(async () => {
-			if (this.stopped) {
+			if (this.stopped || this.moved) {
 				return;
 			}
 			try {
