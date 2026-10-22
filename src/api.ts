@@ -71,6 +71,16 @@ export interface SyncToken {
 export type SpaceRole = 'owner' | 'editor' | 'viewer';
 export type ScanMode = 'off' | 'suggest' | 'auto';
 
+/** What a space costs the server, in bytes. */
+export interface SpaceUsage {
+	notesBytes: number;
+	versionsBytes: number;
+	attachmentsBytes: number;
+	derivedBytes: number;
+	totalBytes: number;
+	quotaBytes: number;
+}
+
 export interface Space {
 	id: string;
 	name: string;
@@ -85,6 +95,8 @@ export interface Space {
 	baseMetadata: boolean | null;
 	/** Whether adding base metadata to the space's older notes was asked for. */
 	baseBackfillRequested: boolean;
+	/** Null when the server does not report usage with its spaces. */
+	usage: SpaceUsage | null;
 }
 
 export interface ScanSettings {
@@ -368,6 +380,31 @@ function readPerson(value: unknown): Person {
 const ROLES: readonly SpaceRole[] = ['owner', 'editor', 'viewer'];
 const SCAN_MODES: readonly ScanMode[] = ['off', 'suggest', 'auto'];
 
+function readUsage(value: unknown): SpaceUsage | null {
+	if (typeof value !== 'object' || value === null) {
+		return null;
+	}
+	const usage = value as Record<string, unknown>;
+	const bytes = (key: string): number | null => {
+		const n = usage[key];
+		return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
+	};
+	const notesBytes = bytes('notes_bytes');
+	const totalBytes = bytes('total_bytes');
+	const quotaBytes = bytes('quota_bytes');
+	if (notesBytes === null || totalBytes === null || quotaBytes === null) {
+		return null;
+	}
+	return {
+		notesBytes,
+		versionsBytes: bytes('versions_bytes') ?? 0,
+		attachmentsBytes: bytes('attachments_bytes') ?? 0,
+		derivedBytes: bytes('derived_bytes') ?? 0,
+		totalBytes,
+		quotaBytes,
+	};
+}
+
 function readSpace(value: unknown): Space {
 	const space = asRecord(value);
 	const role = space['role'];
@@ -381,6 +418,7 @@ function readSpace(value: unknown): Space {
 		archived: space['archived'] === true,
 		baseMetadata: typeof space['base_metadata'] === 'boolean' ? space['base_metadata'] : null,
 		baseBackfillRequested: space['base_backfill_requested'] === true,
+		usage: readUsage(space['usage']),
 	};
 }
 

@@ -77,7 +77,7 @@ describe('plugin load', () => {
 	it('loads stored settings through the same validation', async () => {
 		const plugin = await loadedPlugin({ serverUrl: 3, folder: 'Notes', syncEnabled: 'yes' });
 		expect(plugin.settings.serverUrl).toBe('');
-		expect(plugin.settings.folder).toBe('Notes');
+		expect(plugin.settings.mapping).toEqual({ kind: 'folder', path: 'Notes' });
 		expect(plugin.settings.syncEnabled).toBe(false);
 	});
 });
@@ -227,9 +227,9 @@ describe('download to this device', () => {
 
 		await plugin.downloadToDevice();
 		expect(app.vault.folders.has('Personal')).toBe(true);
-		expect(plugin.settings).toMatchObject({ folder: 'Personal', syncEnabled: true });
+		expect(plugin.settings).toMatchObject({ mapping: { kind: 'folder', path: 'Personal' }, syncEnabled: true });
 		expect(plugin.settings.sync).toEqual({ known: {}, seeded: false });
-		expect(plugin.storedData).toMatchObject({ folder: 'Personal', syncEnabled: true });
+		expect(plugin.storedData).toMatchObject({ mapping: { kind: 'folder', path: 'Personal' }, syncEnabled: true });
 		expect(plugin.status().configured).toBe(true);
 	});
 
@@ -241,7 +241,7 @@ describe('download to this device', () => {
 		const plugin = await pairedPlugin(app);
 		expect(plugin.downloadFolder()).toBe('Personal 3');
 		await plugin.downloadToDevice();
-		expect(plugin.settings.folder).toBe('Personal 3');
+		expect(plugin.settings.mapping).toEqual({ kind: 'folder', path: 'Personal 3' });
 		expect(app.vault.folders.has('Personal 3')).toBe(true);
 		expect(app.vault.files.get('Personal/Old.md')).toBe('kept');
 	});

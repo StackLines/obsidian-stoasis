@@ -27,11 +27,11 @@ export function obsidianVault(app: App): VaultAdapter {
 	}
 
 	return {
-		listMarkdown: (folder) =>
+		listMarkdown: (mapping) =>
 			vault
 				.getMarkdownFiles()
 				.map((f) => f.path)
-				.filter((path) => path.startsWith(`${folder}/`)),
+				.filter((path) => mapping.kind === 'vault' || path.startsWith(`${mapping.path}/`)),
 		exists: (path) => vault.getAbstractFileByPath(path) instanceof TFile,
 		read: (path) => vault.read(file(path)),
 		create: async (path, text) => {

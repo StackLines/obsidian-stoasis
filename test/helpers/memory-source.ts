@@ -1,6 +1,7 @@
 import * as Y from 'yjs';
 import type { ConnectionState, DocSource, LocalStoreFactory, OpenDoc } from '../../src/sync/docs';
 import type { VaultAdapter } from '../../src/sync/engine';
+import type { Mapping } from '../../src/sync/paths';
 
 /** The server side for in-memory devices: one document per name. */
 export class MemoryHub {
@@ -212,8 +213,11 @@ export class FakeVault implements VaultAdapter {
 		this.lateFaults.push({ path, message });
 	}
 
-	listMarkdown(folder: string): string[] {
-		return [...this.files.keys()].filter((p) => p.startsWith(`${folder}/`) && p.endsWith('.md'));
+	listMarkdown(mapping: Mapping): string[] {
+		// Everything, hidden folders included: the engine must drop those itself.
+		return [...this.files.keys()].filter(
+			(p) => p.endsWith('.md') && (mapping.kind === 'vault' || p.startsWith(`${mapping.path}/`)),
+		);
 	}
 
 	exists(path: string): boolean {

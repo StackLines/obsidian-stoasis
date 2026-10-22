@@ -31,7 +31,7 @@ class Device {
 			vault: this.vault,
 			source: this.source,
 			spaceId: SPACE_ID,
-			folder: FOLDER,
+			mapping: { kind: 'folder', path: FOLDER },
 			state: this.state,
 			saveState: () => undefined,
 			writeDelayMs: 1,

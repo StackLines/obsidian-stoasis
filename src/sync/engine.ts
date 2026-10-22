@@ -9,19 +9,21 @@ import {
 } from './docs';
 import {
 	conflictPath,
+	folderMapping,
 	isNoteId,
 	isSyncablePath,
 	newNoteId,
 	sparePath,
 	toRelative,
 	toVaultPath,
+	type Mapping,
 } from './paths';
 import { captureBase, mergeOutsideEdit, replacesMost, setText, type MergeBase } from './text';
 
 /** The few vault operations the engine needs, with vault-relative paths. */
 export interface VaultAdapter {
-	/** Markdown files anywhere under `folder`. */
-	listMarkdown(folder: string): string[];
+	/** Markdown files anywhere in the mapping; the engine drops the ones it never syncs. */
+	listMarkdown(mapping: Mapping): string[];
 	exists(path: string): boolean;
 	read(path: string): Promise<string>;
 	/** Creates a file and any missing parent folders. */
@@ -41,6 +43,18 @@ export interface VaultAdapter {
 }
 
 /** Added to the notice for a conflict copy: how to choose between it and the note. */
+/**
+ * Under the whole vault, one folder going away, a vault restored or an app
+ * evicting files can delete many notes at once. This many missing notes, and
+ * a quarter of the known ones, are held until the user says to delete them.
+ */
+export const MASS_DELETE_MIN = 25;
+const MASS_DELETE_SHARE = 0.25;
+/** An empty vault listing while this many notes are known is held whatever the count. */
+const EMPTY_LISTING_MIN = 5;
+/** Deletion events that arrive within this time are judged together. */
+const DELETE_BATCH_MS = 250;
+
 const COMPARE_HINT = ' Open the copy and run "Compare with the synced note" to keep one of them.';
 
 /** What the engine remembers between sessions, per mapped folder. */
@@ -77,8 +91,10 @@ export interface EngineOptions {
 	vault: VaultAdapter;
 	source: DocSource;
 	spaceId: string;
-	/** Vault folder the space is mapped to, without a trailing slash. */
-	folder: string;
+	/** What the space is mapped to: a vault folder, or the whole vault. */
+	mapping: Mapping;
+	/** The vault's configuration folder, never synced from the whole vault. */
+	configDir?: string;
 	state: EngineState;
 	saveState: (state: EngineState) => void;
 	/** Delay before a remote change to a closed note is written to disk. */
@@ -93,6 +109,13 @@ export interface EngineOptions {
 	 * linked to it must link again.
 	 */
 	onRelink?: (path: string) => void;
+	/**
+	 * Called with how many notes are missing from a whole vault when that is too
+	 * many to delete without asking. Nothing is deleted until `releaseHeld`.
+	 */
+	onMassDelete?: (count: number) => void;
+	/** How long deletion events are gathered under the whole vault, to judge them together. */
+	deleteBatchMs?: number;
 }
 
 /** A link between an open editor and a note's shared text. */
@@ -178,7 +201,7 @@ const LOAD_BATCH = 25;
 export class SyncEngine {
 	private readonly vault: VaultAdapter;
 	private readonly source: DocSource;
-	private folder: string;
+	private mapping: Mapping;
 	private readonly state: EngineState;
 	private readonly writeDelayMs: number;
 	private readonly now: () => Date;
@@ -202,6 +225,11 @@ export class SyncEngine {
 	private readonly reportedClashes = new Set<string>();
 	private queue: Promise<void> = Promise.resolve();
 	private stopped = false;
+	/** Notes missing from disk under the whole vault, not yet deleted from the space. */
+	private held = new Set<string>();
+	private deciding = false;
+	private pendingDeletes = new Set<string>();
+	private deleteTimer: number | null = null;
 	private started = false;
 	/**
 	 * While the first pass loads notes in batches: reconciling creates files
@@ -216,7 +244,7 @@ export class SyncEngine {
 	constructor(private readonly options: EngineOptions) {
 		this.vault = options.vault;
 		this.source = options.source;
-		this.folder = options.folder;
+		this.mapping = options.mapping;
 		this.state = options.state;
 		this.writeDelayMs = options.writeDelayMs ?? 500;
 		this.now = options.now ?? (() => new Date());
@@ -327,6 +355,10 @@ export class SyncEngine {
 	/** Stops all work; settles once the task running now, if any, is done. */
 	async stop(): Promise<void> {
 		this.stopped = true;
+		if (this.deleteTimer !== null) {
+			window.clearTimeout(this.deleteTimer);
+			this.deleteTimer = null;
+		}
 		this.signalStop();
 		this.unobserveIndex?.();
 		this.unwatchSource?.();
@@ -364,10 +396,7 @@ export class SyncEngine {
 	fileDeleted(path: string): void {
 		const rel = this.relative(path);
 		if (rel !== null) {
-			void this.enqueue(async () => {
-				await this.diskDeleted(rel);
-				await this.retryClashes();
-			});
+			this.deletedOnDisk(rel);
 		}
 	}
 
@@ -387,7 +416,7 @@ export class SyncEngine {
 			} else if (from === null && to !== null) {
 				await this.diskCreated(to);
 			} else if (from !== null && to === null) {
-				await this.diskDeleted(from);
+				this.deletedOnDisk(from);
 			} else if (from !== null && to !== null) {
 				this.diskRenamed(from, to);
 			}
@@ -400,7 +429,65 @@ export class SyncEngine {
 	 * for the folder arrives; events for the files inside it then match up.
 	 */
 	folderMoved(folder: string): void {
-		this.folder = folder;
+		this.mapping = folderMapping(folder);
+	}
+
+	/** A file left the synced files; under the whole vault, many at once are held. */
+	private deletedOnDisk(rel: string): void {
+		if (this.mapping.kind !== 'vault') {
+			void this.enqueue(async () => {
+				await this.diskDeleted(rel);
+				await this.retryClashes();
+			});
+			return;
+		}
+		this.pendingDeletes.add(rel);
+		this.deleteTimer ??= window.setTimeout(() => {
+			this.deleteTimer = null;
+			const batch = [...this.pendingDeletes];
+			this.pendingDeletes.clear();
+			void this.enqueue(async () => {
+				await this.deleteOrHold(batch, false);
+				await this.retryClashes();
+			});
+		}, this.options.deleteBatchMs ?? DELETE_BATCH_MS);
+	}
+
+	/** Deletes the notes of `rels` that are gone, or holds them when there are too many. */
+	private async deleteOrHold(rels: string[], emptyListing: boolean): Promise<void> {
+		const gone = rels.filter((rel) => this.state.known[rel] !== undefined && !this.vault.exists(this.path(rel)));
+		if (this.mapping.kind === 'vault') {
+			const total = new Set([...this.held, ...gone]).size;
+			const known = Object.keys(this.state.known).length;
+			const tooMany =
+				(total >= MASS_DELETE_MIN && total > known * MASS_DELETE_SHARE) ||
+				(emptyListing && known >= EMPTY_LISTING_MIN);
+			if (this.held.size > 0 || tooMany) {
+				for (const rel of gone) {
+					this.held.add(rel);
+				}
+				if (!this.deciding && this.held.size > 0) {
+					this.deciding = true;
+					this.options.onMassDelete?.(this.held.size);
+				}
+				return;
+			}
+		}
+		for (const rel of gone) {
+			await this.diskDeleted(rel);
+		}
+	}
+
+	/** Deletes the held notes from the space, as the user asked. */
+	releaseHeld(): void {
+		const held = [...this.held];
+		this.held.clear();
+		this.deciding = false;
+		void this.enqueue(async () => {
+			for (const rel of held) {
+				await this.diskDeleted(rel);
+			}
+		});
 	}
 
 	/** Checks the folder against what the engine knows, as at startup. */
@@ -980,7 +1067,7 @@ export class SyncEngine {
 		for (const rel of Object.keys(this.state.known)) {
 			index.add(rel);
 		}
-		for (const path of this.vault.listMarkdown(this.folder)) {
+		for (const path of this.vault.listMarkdown(this.mapping)) {
 			const rel = this.relative(path);
 			if (rel !== null) {
 				index.add(rel);
@@ -1154,7 +1241,7 @@ export class SyncEngine {
 			return;
 		}
 		const onDisk = new Set<string>();
-		for (const path of this.vault.listMarkdown(this.folder)) {
+		for (const path of this.vault.listMarkdown(this.mapping)) {
 			const rel = this.relative(path);
 			if (rel !== null) {
 				onDisk.add(rel);
@@ -1170,11 +1257,10 @@ export class SyncEngine {
 				await this.addLocalNote(rel);
 			}
 		}
-		for (const rel of Object.keys(this.state.known)) {
-			if (!onDisk.has(rel)) {
-				await this.diskDeleted(rel);
-			}
-		}
+		await this.deleteOrHold(
+			Object.keys(this.state.known).filter((rel) => !onDisk.has(rel)),
+			onDisk.size === 0,
+		);
 	}
 
 	// Notes.
@@ -1350,7 +1436,7 @@ export class SyncEngine {
 		const result: Array<[string, IndexEntry]> = [];
 		map.forEach((value, rel) => {
 			const entry = readEntry(value);
-			if (entry !== null && entry.kind === 'markdown' && isSyncablePath(rel)) {
+			if (entry !== null && entry.kind === 'markdown' && isSyncablePath(rel) && this.relative(this.path(rel)) !== null) {
 				result.push([rel, entry]);
 			}
 		});
@@ -1387,11 +1473,11 @@ export class SyncEngine {
 	}
 
 	private relative(path: string): string | null {
-		return toRelative(this.folder, path);
+		return toRelative(this.mapping, path, this.options.configDir);
 	}
 
 	private path(rel: string): string {
-		return toVaultPath(this.folder, rel);
+		return toVaultPath(this.mapping, rel);
 	}
 
 	private save(): void {

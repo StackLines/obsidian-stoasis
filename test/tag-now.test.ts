@@ -58,7 +58,7 @@ async function setUp(paired = true) {
 	if (paired) {
 		expect(await plugin.pair(SERVER, 'ABCD2345', 'Desk')).toBe(true);
 	}
-	expect(plugin.settings.folder).toBe('');
+	expect(plugin.settings.mapping).toBeNull();
 	notices.length = 0;
 	const file = new TFile(NOTE);
 	/** The open editor, which holds the note's text as the app shows it. */
