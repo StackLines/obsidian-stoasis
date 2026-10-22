@@ -49,6 +49,7 @@ beforeEach(async () => {
 	await server.start();
 	control = new FakeControlPlane(server.url.replace('ws://', 'http://'));
 	control.codes.add('EFGH2345');
+	control.codes.add('JKMN2345');
 	setRequestHandler(control.handle);
 });
 
@@ -240,6 +241,108 @@ describe('plugin sync', () => {
 		expect(notices.filter((n) => n.startsWith('Stoasis: downloading'))).toHaveLength(1);
 	}, 40_000);
 
+	describe('moving a folder space to the whole vault', () => {
+		const VAULT = {
+			'Notes/One.md': 'one',
+			'Notes/Deep/Two.md': 'two',
+			'Inbox/Todo.md': 'todo',
+			'Projects/Plan.md': 'plan',
+		};
+
+		/** Waits for the next window, reads it, and presses `label`. */
+		const answered = new Set<unknown>();
+		beforeEach(() => {
+			openedModals.length = 0;
+		});
+		async function answerNext(label: string): Promise<string> {
+			await eventually(() => expect(openedModals.some((m) => !answered.has(m))).toBe(true));
+			const next = openedModals.find((m) => !answered.has(m));
+			answered.add(next);
+			const modal = next as unknown as { contentEl: ContainerEl };
+			await eventually(() => expect(modal.contentEl.items.length).toBeGreaterThan(1));
+			const text = modal.contentEl.items.map((i) => i.text ?? '').join(' ');
+			const buttons = modal.contentEl.items.flatMap((i) => i.controls ?? []);
+			if (!buttons.some((b) => b.label === label)) {
+				throw new Error(`no ${label} in ${text}`);
+			}
+			await (buttons.find((b) => b.label === label) ?? fail()).click();
+			return text;
+		}
+
+		async function folderDevices(): Promise<{ a: TestPlugin; b: TestPlugin }> {
+			const a = await device('ABCD2345', 'Notes', VAULT);
+			await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+			const b = await device('EFGH2345', 'Synced');
+			await eventually(() => expect(b.app.vault.files.get('Synced/Deep/Two.md')).toBe('two'), 8000);
+			return { a, b };
+		}
+
+		it('puts the notes under their folder, uploads the others, and keeps every id', async () => {
+			const { a } = await folderDevices();
+			const ids = { ...a.settings.sync.known };
+			const moving = a.chooseWholeVault();
+			const text = await answerNext('Move the space');
+			expect(text).toContain('The space now starts at "Notes"');
+			expect(text).toContain('2 notes');
+			expect(await moving).toBe(true);
+			expect(a.settings.mapping).toEqual({ kind: 'vault' });
+			await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 10_000);
+			await eventually(() => expect(Object.keys(a.settings.sync.known).sort()).toEqual([
+				'Inbox/Todo.md',
+				'Notes/Deep/Two.md',
+				'Notes/One.md',
+				'Projects/Plan.md',
+			]), 10_000);
+			expect(a.settings.sync.known['Notes/One.md']).toBe(ids['One.md']);
+			expect(a.settings.sync.known['Notes/Deep/Two.md']).toBe(ids['Deep/Two.md']);
+			// Nothing was moved or copied in the vault.
+			expect(a.app.vault.files.get('Notes/One.md')).toBe('one');
+			expect([...a.app.vault.files.keys()].sort()).toEqual(Object.keys(VAULT).sort());
+		}, 40_000);
+
+		it('asks another device to follow, renames its folder, and brings it the other folders', async () => {
+			const { a, b } = await folderDevices();
+			const moving = a.chooseWholeVault();
+			await answerNext('Move the space');
+			await moving;
+			const text = await answerNext('Sync the whole vault');
+			expect(text).toContain('Another device moved the space to the vault root');
+			expect(text).toContain('"Synced" will be renamed to "Notes"');
+			await eventually(() => expect(b.settings.mapping).toEqual({ kind: 'vault' }), 8000);
+			await eventually(() => expect(b.app.vault.files.get('Projects/Plan.md')).toBe('plan'), 15_000);
+			expect(b.app.vault.files.get('Notes/Deep/Two.md')).toBe('two');
+			expect([...b.app.vault.files.keys()].some((p) => p.startsWith('Synced/'))).toBe(false);
+			// No copies, and both keep syncing.
+			expect(b.app.vault.getMarkdownFiles()).toHaveLength(4);
+			await b.app.vault.modify(new TFile('Notes/One.md'), 'one, edited on B');
+			await eventually(() => expect(a.app.vault.files.get('Notes/One.md')).toBe('one, edited on B'), 8000);
+			await a.app.vault.create('Inbox/Later.md', 'later');
+			await eventually(() => expect(b.app.vault.files.get('Inbox/Later.md')).toBe('later'), 8000);
+		}, 60_000);
+
+		it('does nothing to a device that has not followed yet, until it agrees', async () => {
+			const { a, b } = await folderDevices();
+			const moving = a.chooseWholeVault();
+			await answerNext('Move the space');
+			await moving;
+			await answerNext('Cancel');
+			await eventually(() => expect(b.settings.syncEnabled).toBe(false), 8000);
+			expect(b.settings.mapping).toEqual({ kind: 'folder', path: 'Synced' });
+			expect([...b.app.vault.files.keys()].sort()).toEqual(['Synced/Deep/Two.md', 'Synced/One.md']);
+		}, 60_000);
+
+		it('lets a new device join the space at the vault root', async () => {
+			const { a } = await folderDevices();
+			const moving = a.chooseWholeVault();
+			await answerNext('Move the space');
+			await moving;
+			const { plugin: c, chosen } = await vaultDevice('JKMN2345', {});
+			expect(chosen, notices.join(' | ')).toBe(true);
+			await eventually(() => expect(c.app.vault.files.get('Notes/Deep/Two.md')).toBe('two'), 15_000);
+			expect(c.app.vault.files.get('Inbox/Todo.md')).toBe('todo');
+		}, 60_000);
+	});
+
 	describe('mapped to the whole vault', () => {
 		const VAULT = {
 			'Inbox.md': '# Inbox\n',
@@ -258,34 +361,34 @@ describe('plugin sync', () => {
 			await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
 			expect(Object.keys(a.settings.sync.known).sort()).toEqual(['Inbox.md', 'Work/Deep/Notes.md', 'Work/Plan.md']);
 
-			// Another device syncs the space into a folder: paths in the index are the vault's own.
-			const b = await device('EFGH2345', 'Synced');
-			await eventually(() => expect(b.app.vault.files.get('Synced/Work/Deep/Notes.md')).toBe('deep'), 8000);
-			expect(b.app.vault.files.get('Synced/Inbox.md')).toBe('# Inbox\n');
+			// Another device syncs the whole vault too: paths in the index are the vault's own.
+			const { plugin: b } = await vaultDevice('EFGH2345', {});
+			await eventually(() => expect(b.app.vault.files.get('Work/Deep/Notes.md')).toBe('deep'), 8000);
+			expect(b.app.vault.files.get('Inbox.md')).toBe('# Inbox\n');
 			expect([...b.app.vault.files.keys()].sort()).toEqual([
-				'Synced/Inbox.md',
-				'Synced/Work/Deep/Notes.md',
-				'Synced/Work/Plan.md',
+				'Inbox.md',
+				'Work/Deep/Notes.md',
+				'Work/Plan.md',
 			]);
 
-			await b.app.vault.create('Synced/Fresh.md', 'new');
+			await b.app.vault.create('Fresh.md', 'new');
 			await eventually(() => expect(a.app.vault.files.get('Fresh.md')).toBe('new'), 8000);
 		}, 40_000);
 
 		it('follows a note at the root through a rename, a move and a delete', async () => {
 			const { plugin: a } = await vaultDevice('ABCD2345', { 'Inbox.md': 'inbox' });
-			const b = await device('EFGH2345', 'Synced');
-			await eventually(() => expect(b.app.vault.files.get('Synced/Inbox.md')).toBe('inbox'), 8000);
+			const { plugin: b } = await vaultDevice('EFGH2345', {});
+			await eventually(() => expect(b.app.vault.files.get('Inbox.md')).toBe('inbox'), 8000);
 
 			await a.app.vault.rename(new TFile('Inbox.md') as never, 'Todo.md');
-			await eventually(() => expect(b.app.vault.files.get('Synced/Todo.md')).toBe('inbox'), 8000);
-			expect(b.app.vault.files.has('Synced/Inbox.md')).toBe(false);
+			await eventually(() => expect(b.app.vault.files.get('Todo.md')).toBe('inbox'), 8000);
+			expect(b.app.vault.files.has('Inbox.md')).toBe(false);
 
 			await a.app.vault.rename(new TFile('Todo.md') as never, 'Work/Todo.md');
-			await eventually(() => expect(b.app.vault.files.get('Synced/Work/Todo.md')).toBe('inbox'), 8000);
+			await eventually(() => expect(b.app.vault.files.get('Work/Todo.md')).toBe('inbox'), 8000);
 
 			await a.app.vault.delete(new TFile('Work/Todo.md') as never);
-			await eventually(() => expect(b.app.vault.files.has('Synced/Work/Todo.md')).toBe(false), 8000);
+			await eventually(() => expect(b.app.vault.files.has('Work/Todo.md')).toBe(false), 8000);
 			expect(a.settings.mapping).toEqual({ kind: 'vault' });
 			expect(status(a)).toBe('Stoasis: synced');
 		}, 40_000);
@@ -297,23 +400,23 @@ describe('plugin sync', () => {
 				'Work/Deep/Notes.md': 'deep',
 				'Old/Gone.md': 'gone',
 			});
-			const b = await device('EFGH2345', 'Synced');
+			const { plugin: b } = await vaultDevice('EFGH2345', {});
 			await eventually(() => expect(b.app.vault.files.size).toBe(4), 8000);
 
 			await a.app.vault.rename(a.app.vault.getAbstractFileByPath('Work') as never, 'Projects');
-			await eventually(() => expect(b.app.vault.files.get('Synced/Projects/Deep/Notes.md')).toBe('deep'), 8000);
-			expect(b.app.vault.files.has('Synced/Work/Plan.md')).toBe(false);
+			await eventually(() => expect(b.app.vault.files.get('Projects/Deep/Notes.md')).toBe('deep'), 8000);
+			expect(b.app.vault.files.has('Work/Plan.md')).toBe(false);
 			// The vault root is not a mapped folder that went missing.
 			expect(a.settings.mapping).toEqual({ kind: 'vault' });
 			expect(status(a)).toBe('Stoasis: synced');
 
 			await a.app.vault.delete(a.app.vault.getAbstractFileByPath('Old') as never);
-			await eventually(() => expect(b.app.vault.files.has('Synced/Old/Gone.md')).toBe(false), 8000);
-			expect(b.app.vault.files.get('Synced/Inbox.md')).toBe('inbox');
+			await eventually(() => expect(b.app.vault.files.has('Old/Gone.md')).toBe(false), 8000);
+			expect(b.app.vault.files.get('Inbox.md')).toBe('inbox');
 			expect(a.settings.syncEnabled).toBe(true);
 			expect(status(a)).toBe('Stoasis: synced');
 
-			await b.app.vault.create('Synced/After.md', 'after');
+			await b.app.vault.create('After.md', 'after');
 			await eventually(() => expect(a.app.vault.files.get('After.md')).toBe('after'), 8000);
 		}, 40_000);
 
@@ -335,9 +438,9 @@ describe('plugin sync', () => {
 			expect(again.settings.mapping).toEqual({ kind: 'vault' });
 			await eventually(() => expect(status(again)).toBe('Stoasis: synced'), 8000);
 			await app.vault.modify(new TFile('Work/Plan.md'), 'plan, edited');
-			const b = await device('EFGH2345', 'Synced');
-			await eventually(() => expect(b.app.vault.files.get('Synced/Work/Plan.md')).toBe('plan, edited'), 8000);
-			expect(b.app.vault.files.get('Synced/Inbox.md')).toBe('inbox');
+			const { plugin: b } = await vaultDevice('EFGH2345', {});
+			await eventually(() => expect(b.app.vault.files.get('Work/Plan.md')).toBe('plan, edited'), 8000);
+			expect(b.app.vault.files.get('Inbox.md')).toBe('inbox');
 		}, 40_000);
 
 		it('asks first, saying how many notes will be uploaded, and maps nothing when cancelled', async () => {
@@ -361,39 +464,23 @@ describe('plugin sync', () => {
 			expect(plugin.settings.mapping).toBeNull();
 		});
 
-		it('is refused for a space that already has notes, and changes nothing', async () => {
-			control.notesBytes = 4096;
+		it('is refused for a space synced from a folder when this device syncs no folder, and changes nothing', async () => {
+			const a = await device('ABCD2345', 'Notes', { 'Notes/One.md': 'one' });
+			await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
 			const app = new App();
 			app.vault.files.set('Inbox.md', 'inbox');
 			const plugin = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.3.0' } as never) as TestPlugin;
 			plugins.push(plugin);
 			await plugin.onload();
 			app.workspace.ready();
-			expect(await plugin.pair(control.server, 'ABCD2345', 'Test device')).toBe(true);
+			expect(await plugin.pair(control.server, 'EFGH2345', 'Test device')).toBe(true);
 			openedModals.length = 0;
 			notices.length = 0;
 			expect(await plugin.chooseWholeVault()).toBe(false);
 			expect(openedModals).toHaveLength(0);
-			expect(notices.join('\n')).toContain('This space already has notes');
+			expect(notices.join('\n')).toContain('This space was synced from a folder');
 			expect(plugin.settings.mapping).toBeNull();
-		});
-
-		it('is refused when the server does not say how much the space holds', async () => {
-			const app = new App();
-			const plugin = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.3.0' } as never) as TestPlugin;
-			plugins.push(plugin);
-			await plugin.onload();
-			app.workspace.ready();
-			expect(await plugin.pair(control.server, 'ABCD2345', 'Test device')).toBe(true);
-			for (const space of control.spaces) {
-				delete space['usage'];
-			}
-			(control as unknown as { usage: () => unknown }).usage = () => undefined;
-			notices.length = 0;
-			expect(await plugin.chooseWholeVault()).toBe(false);
-			expect(notices.join('\n')).toContain('This space already has notes');
-			expect(plugin.settings.mapping).toBeNull();
-		});
+		}, 30_000);
 
 		it('warns once about the vault root, in words that fit it', async () => {
 			const app = new App();

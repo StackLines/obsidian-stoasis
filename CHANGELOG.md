@@ -33,16 +33,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   folder. Every Markdown note syncs, at the same path in the space, except
   Obsidian's configuration folder and hidden folders. Choose **Whole vault**
   in the settings tab; a window states how many notes will be uploaded and
-  asks first, with a longer warning above 500 notes. Only a space with
-  no notes can be mapped to the vault (a note's path in the space is relative
-  to the folder a device syncs), because a second space cannot be made.
+  asks first, with a longer warning above 500 notes.
+- **Moving a folder space to the whole vault**: a space synced from a folder
+  (say `notes`, next to `inbox` and `projects`) can grow to the whole vault.
+  Choosing **Whole vault** on the device that syncs the folder asks first, then
+  puts every note of the space under that folder's path in one change (note
+  ids, history and links stay), marks the space as starting at the vault
+  root, and uploads the notes in the other folders as new notes. Nothing moves
+  in the vault. Another device that syncs a folder stops and asks to follow:
+  it renames its folder to the one the space expects, then syncs the whole
+  vault. A device that has not followed changes nothing. A new device can join
+  a space that starts at the vault root. Update the plugin on all devices
+  before moving: a 0.2 device does not understand the change.
   Renaming or deleting a folder inside the vault moves or deletes its notes
   and sync keeps running. Folder warnings are worded for the vault.
   Many notes missing from the vault at once, as when a folder is deleted or a
   sync tool evicts files, are held until you confirm deleting them everywhere.
   Switching from the vault to a folder asks first.
-  Tested with simulated devices and a real sync server, 2,500 notes; not yet
-  tested in Obsidian itself.
+  Tested with simulated devices and a real sync server, 2,500 notes, and in
+  two desktop Obsidian instances (edits, a rename, a folder delete, the large
+  delete window, the move above); not tested on iOS.
 
 ### Changed
 

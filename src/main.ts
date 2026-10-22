@@ -40,10 +40,12 @@ import {
 } from './settings';
 import { describeRefused, describeStatus, explainStatus, type SyncSnapshot } from './status';
 import { EditorSync } from './sync/binding';
-import { spaceDocName, type ConnectionState } from './sync/docs';
+import type * as Y from 'yjs';
+import { INDEX_FIELD, spaceDocName, type ConnectionState } from './sync/docs';
 import { emptyEngineState, SyncEngine } from './sync/engine';
 import { HocuspocusDocSource, SyncAccessError, type SyncAccess } from './sync/hocuspocus';
 import { indexedDbStores } from './sync/idb';
+import { readRootMeta, rerootIndex, translateKnown, type RootMeta } from './sync/root';
 import { checkCompatibility, describeIncompatibility } from './version';
 import { folderProbe, obsidianVault } from './vault';
 import { checkFolder, describeRisk, warningKey } from './folder-warnings';
@@ -84,6 +86,9 @@ const SAVE_DELAY_MS = 2000;
 const RESCAN_DELAY_MS = 2000;
 /** How long to wait before retrying when the space could not be loaded. */
 const SPACE_RETRY_MS = 30_000;
+const wait = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms));
+/** How long to wait for the server when looking at or changing the space once. */
+const SPACE_LOOK_MS = 15_000;
 /** How often to ask again for the key of a disconnected device to be revoked. */
 const REVOKE_RETRY_MS = 10 * 60_000;
 /** Above this many notes, syncing the whole vault asks what is about to be uploaded. */
@@ -375,7 +380,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 				'Sync a folder instead of the whole vault?',
 				`The space's notes will be downloaded into "${folder}", under their paths in the space, ` +
 					`and the notes already in "${folder}" will be uploaded as new notes. ` +
-					'Notes in the space are not deleted, but you may end up with copies. To sync the whole vault again later, the space must be empty.',
+					'Notes in the space are not deleted, but you may end up with copies.',
 				'Sync the folder',
 			).ask();
 			if (!confirmed) {
@@ -389,26 +394,25 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		if (sameMapping(WHOLE_VAULT, this.settings.mapping)) {
 			return true;
 		}
-		const api = this.brainApi();
-		if (api === null) {
+		if (this.brainApi() === null) {
 			new Notice('Pair this device first.');
 			return false;
 		}
-		let empty;
-		try {
-			empty = await this.spaceIsEmpty(api);
-		} catch (error) {
-			new Notice(describeApiError(error));
+		// What the space holds is read from its document: the server's byte count
+		// can lag behind notes just uploaded.
+		// A running session has the space open already: a second copy on the same
+		// local storage would compete with it.
+		const look =
+			this.session?.engine.spaceSummary() ??
+			(this.session === null
+				? await this.withSpace((doc) => ({ meta: readRootMeta(doc), notes: doc.getMap(INDEX_FIELD).size }))
+				: undefined);
+		if (look === undefined) {
+			new Notice('Could not reach your server to look at the space. Try again when you are online.');
 			return false;
 		}
-		if (!empty) {
-			new Notice(
-				'This space already has notes, synced from a folder on this or another device. ' +
-					'Paths in a space are relative to the folder each device syncs, so the whole vault ' +
-					'cannot be merged into it. It can only be synced into a space that has no notes yet.',
-				0,
-			);
-			return false;
+		if (look.notes > 0) {
+			return this.chooseWholeVaultOfPopulatedSpace(look.meta);
 		}
 		const count = this.wholeVaultNotes();
 		const text =
@@ -445,11 +449,163 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		}
 	}
 
-	/** Whether the personal space has never held a note, by what the server counts. */
-	private async spaceIsEmpty(api: NotesApi): Promise<boolean> {
-		const space = (await api.listSpaces()).find((s) => s.id === this.settings.spaceId);
-		// A server that does not report usage cannot say; assume the space has notes.
-		return space?.usage !== null && space?.usage !== undefined && space.usage.notesBytes === 0;
+	/**
+	 * A space that has notes already: join it when it starts at the vault root,
+	 * or move it there from the folder this device syncs.
+	 */
+	private async chooseWholeVaultOfPopulatedSpace(meta: RootMeta | null): Promise<boolean> {
+		const mapping = this.settings.mapping;
+		const configDir = this.app.vault.configDir;
+		const inVault = this.wholeVaultNotes();
+		if (meta !== null) {
+			const confirmed = await new ConfirmModal(
+				this.app,
+				'Sync the whole vault?',
+				`The space's notes will be downloaded into this vault, under their paths in the space. ` +
+					`The ${inVault} ${inVault === 1 ? 'note' : 'notes'} here are uploaded as new notes, ` +
+					'or merged by path with notes the space has at the same path.',
+				'Sync the whole vault',
+			).ask();
+			if (!confirmed) {
+				return false;
+			}
+			await this.applyMapping(WHOLE_VAULT, false, true);
+			return true;
+		}
+		if (mapping?.kind !== 'folder') {
+			new Notice(
+				'This space was synced from a folder, so its paths start at that folder. ' +
+					'Sync that folder on this device first, then choose the whole vault to move the space to it.',
+				0,
+			);
+			return false;
+		}
+		const folder = mapping.path;
+		const inside = this.app.vault
+			.getMarkdownFiles()
+			.filter((file) => toRelative(mapping, file.path, configDir) !== null).length;
+		const outside = inVault - inside;
+		const confirmed = await new ConfirmModal(
+			this.app,
+			'Move the space to the whole vault?',
+			`The space now starts at "${folder}". It will start at the vault root: the notes in "${folder}" ` +
+				`stay where they are and keep their history, and ${outside} ${outside === 1 ? 'note' : 'notes'} ` +
+				'in other folders are uploaded as new notes. Your other devices will ask to follow. ' +
+				'Update the plugin on all of them first: a device on version 0.2 does not understand this change.',
+			'Move the space',
+		).ask();
+		if (!confirmed) {
+			return false;
+		}
+		return this.inLifecycle(async () => {
+			await this.stopSession();
+			const moved = await this.withSpace((doc) => rerootIndex(doc, folder), true);
+			if (moved === undefined || moved === null) {
+				new Notice('The space could not be moved to the whole vault. Nothing was changed.');
+				await this.startSession();
+				return;
+			}
+			this.settings.mapping = WHOLE_VAULT;
+			this.settings.sync = { ...this.settings.sync, known: translateKnown(this.settings.sync.known, folder) };
+			this.settings.syncEnabled = true;
+			await this.saveSettings();
+			await this.startSession();
+		}).then(() => sameMapping(this.settings.mapping, WHOLE_VAULT));
+	}
+
+	/**
+	 * Opens the space document for a look or one change, then closes it. Gives
+	 * undefined when the server's copy could not be had. With `upload`, also
+	 * waits a little for the server to confirm the change.
+	 */
+	private async withSpace<T>(use: (doc: Y.Doc) => T, upload = false): Promise<T | undefined> {
+		const settings = this.settings;
+		const source = new HocuspocusDocSource({
+			url: syncSocketUrl(settings.serverUrl),
+			access: this.syncAccess(settings),
+			stores: indexedDbStores(`stoasis-${settings.installId}`),
+			primary: spaceDocName(settings.spaceId),
+		});
+		try {
+			source.start();
+			const space = source.open(spaceDocName(settings.spaceId));
+			await Promise.race([space.whenSynced(), wait(SPACE_LOOK_MS)]);
+			if (!space.synced) {
+				return undefined;
+			}
+			const result = use(space.doc);
+			for (let waited = 0; upload && !space.confirmed && waited < SPACE_LOOK_MS; waited += 200) {
+				await wait(200);
+			}
+			return result;
+		} finally {
+			await source.destroy();
+		}
+	}
+
+	/** The space now starts at the vault root, but this device syncs a folder: follow it, or pause. */
+	private followRoot(meta: RootMeta): void {
+		void this.inLifecycle(async () => {
+			await this.stopSession();
+			const mapping = this.settings.mapping;
+			if (mapping?.kind !== 'folder') {
+				return;
+			}
+			const folder = mapping.path;
+			const confirmed = await new ConfirmModal(
+				this.app,
+				'This space now syncs a whole vault',
+				meta.prefix === ''
+					? `Another device syncs its whole vault with this space. To follow, this device syncs its whole vault too: the notes in "${folder}" are merged by path with the space's notes.`
+					: `Another device moved the space to the vault root. The notes you have in "${folder}" belong in "${meta.prefix}" now` +
+							(folder === meta.prefix ? '.' : `, so "${folder}" will be renamed to "${meta.prefix}".`) +
+							' Notes in other folders of the space are downloaded next to it.',
+				'Sync the whole vault',
+			).ask();
+			if (!confirmed) {
+				this.settings.syncEnabled = false;
+				await this.saveSettings();
+				this.updateStatus();
+				new Notice('Stoasis: sync is paused until you follow the space to the whole vault.', 0);
+				return;
+			}
+			if (meta.prefix !== '' && folder !== meta.prefix && !(await this.renameSyncedFolder(folder, meta.prefix))) {
+				this.settings.syncEnabled = false;
+				await this.saveSettings();
+				this.updateStatus();
+				return;
+			}
+			this.settings.mapping = WHOLE_VAULT;
+			this.settings.sync =
+				meta.prefix === ''
+					? emptyEngineState()
+					: { ...this.settings.sync, known: translateKnown(this.settings.sync.known, meta.prefix) };
+			this.settings.syncEnabled = true;
+			await this.saveSettings();
+			await this.startSession();
+		});
+	}
+
+	/** Renames the synced folder to `to`, as the space expects; false, with a notice, when that cannot be done. */
+	private async renameSyncedFolder(from: string, to: string): Promise<boolean> {
+		const folder = this.app.vault.getAbstractFileByPath(from);
+		const lower = to.toLowerCase();
+		if (!(folder instanceof TFolder) || this.folders().some((existing) => existing.toLowerCase() === lower) || isWithin(from, to)) {
+			new Notice(
+				`The space expects its notes in "${to}", but that folder exists already. Rename or move it, then turn sync on.`,
+				0,
+			);
+			return false;
+		}
+		const parents = to.split('/').slice(0, -1);
+		for (let n = 1; n <= parents.length; n++) {
+			const parent = parents.slice(0, n).join('/');
+			if (this.app.vault.getAbstractFileByPath(parent) === null) {
+				await this.app.vault.createFolder(parent);
+			}
+		}
+		await this.app.vault.rename(folder, to);
+		return true;
 	}
 
 	/** How many notes the whole vault would upload. */
@@ -899,6 +1055,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			onTracked: () => this.editors.refresh(),
 			onRelink: (path) => this.editors.relink(path),
 			onMassDelete: (count) => void this.askAboutDeletes(engine, count),
+			onRootMoved: (meta) => this.followRoot(meta),
 		});
 		const session: Session = {
 			source,
