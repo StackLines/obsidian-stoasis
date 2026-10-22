@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Deleting many synced notes at once is held until you confirm, from 25 notes
   whatever share of the vault they are (it also required a quarter of it
   before), and for a synced folder as well as the whole vault.
+- Once a space syncs the whole vault it can only be synced as the whole
+  vault; choosing a folder says so, where it used to leave the device paused.
+- A device that syncs a folder no longer writes notes into a space that was
+  moved to the vault root while it was starting up.
+- The scan progress shows nothing for a space the server does not list, where
+  it showed the count of every space.
+- The leak check also rejects a commit made with a personal address.
 - Pairing and loading the space now pick the space you own. A personal space
   that another person shared with you could be chosen when it was listed first,
   and the whole vault would have been uploaded into it. If you own no space,
@@ -36,8 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Stoasis: Note history**, a command (and an entry in the editor menu) for a
   synced note. It lists the note's earlier versions with when, who and why,
   shows how one differs from the note now, and **Restore** writes it back as
-  one ordinary edit that every device merges; the text it replaces stays in
-  the history. A note that changed while the window was open is compared
+  one ordinary edit that every device merges; the text it replaces is usually
+  kept in the history, once it was saved as a version. A note that changed while the window was open is compared
   again instead of overwritten. Tested with a real sync server and simulated
   editors, and in two desktop Obsidian instances with the note open on both;
   not tested on iOS.

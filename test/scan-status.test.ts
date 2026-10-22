@@ -48,15 +48,15 @@ describe('describeScanStatus', () => {
 		expect(lines).toEqual(['1 note is waiting to be read.', 'The last scan finished in part 30 minutes ago.']);
 	});
 
-	it('falls back to the total for a space the server did not list', () => {
+	it('says nothing for a space the server did not list, whatever the deployment-wide count', () => {
 		const lines = describeScanStatus(status({ llm: { pending: 4, paused: false, pausedReason: null, pausedSince: null } }), 'other', NOW);
-		expect(lines[0]).toBe('4 notes are waiting to be read.');
-		expect(lines[1]).toBe('The scanner has not run yet.');
+		expect(lines).toEqual([]);
 	});
 
 	it('says when the scanner is paused, and when a scan is running', () => {
 		const lines = describeScanStatus(
 			status({
+				spaces: [{ spaceId: 's1', scanMode: 'auto', llmPending: 3 }],
 				llm: { pending: 3, paused: true, pausedReason: 'rate_limited', pausedSince: '2026-10-16T11:55:00+00:00' },
 				lastRuns: { base: null, deterministic: null, llm: { outcome: null, startedAt: null, finishedAt: null } },
 			}),
