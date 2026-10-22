@@ -146,8 +146,14 @@ folder name, the folder is called `Stoasis`.
 
 To sync the whole vault instead, choose **Whole vault**. Every Markdown note
 syncs at its own path, except Obsidian's configuration folder and hidden
-folders. It works only while your space has no notes, and a window asks
-first, saying how many notes will be uploaded.
+folders. A window asks first, saying how many notes will be uploaded.
+
+If your space already syncs a folder, say `notes` next to `inbox` and
+`projects`, choosing **Whole vault** on that device moves the space to the
+vault root: your notes keep their history and stay where they are, and the
+notes in the other folders are added. Update Stoasis on all your devices first.
+Each other device then asks to follow, and renames its folder to match if it
+has another name.
 
 To sync a folder you already have instead, choose it under **Or sync an
 existing folder** and turn on **Sync this folder**. Notes already in that
