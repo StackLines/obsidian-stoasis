@@ -51,6 +51,7 @@ async function device(
 	const source = new MemoryDocSource(hub, memoryStores(disk), online);
 	const problems: string[] = [];
 	const engine = new SyncEngine({
+		deleteBatchMs: 1,
 		vault,
 		source,
 		spaceId: SPACE_ID,
@@ -317,7 +318,7 @@ describe('second review', () => {
 		});
 		const vault = new FakeVault();
 		const state = emptyEngineState();
-		const engine = new SyncEngine({ vault, source, spaceId: SPACE_ID, mapping: { kind: 'folder', path: 'Notes' }, state, saveState: () => {}, writeDelayMs: 1 });
+		const engine = new SyncEngine({ deleteBatchMs: 1, vault, source, spaceId: SPACE_ID, mapping: { kind: 'folder', path: 'Notes' }, state, saveState: () => {}, writeDelayMs: 1 });
 		vault.listener = engine;
 		cleanups.push(async () => {
 			vault.listener = null;
@@ -605,6 +606,7 @@ describe('server refusals and limits', () => {
 		stored.destroy();
 		const vault = new FakeVault();
 		const engine = new SyncEngine({
+			deleteBatchMs: 1,
 			vault,
 			source,
 			spaceId: SPACE_ID,
@@ -625,7 +627,7 @@ describe('server refusals and limits', () => {
 		server.requireListing = true;
 		const vault = new FakeVault();
 		const state = emptyEngineState();
-		const engine = new SyncEngine({ vault, source, spaceId: SPACE_ID, mapping: { kind: 'folder', path: 'Notes' }, state, saveState: () => {} });
+		const engine = new SyncEngine({ deleteBatchMs: 1, vault, source, spaceId: SPACE_ID, mapping: { kind: 'folder', path: 'Notes' }, state, saveState: () => {} });
 		vault.listener = engine;
 		cleanups.push(async () => {
 			vault.listener = null;
@@ -934,6 +936,7 @@ describe('two devices through a sync server', () => {
 		const vault = new FakeVault();
 		const state = emptyEngineState();
 		const engine = new SyncEngine({
+			deleteBatchMs: 1,
 			vault,
 			source,
 			spaceId: SPACE_ID,

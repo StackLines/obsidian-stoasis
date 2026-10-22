@@ -432,7 +432,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		return true;
 	}
 
-	/** Many notes of the whole vault are missing: delete them everywhere only if asked. */
+	/** Many synced notes are missing: delete them everywhere only if asked. */
 	private async askAboutDeletes(engine: SyncEngine, count: number): Promise<void> {
 		const confirmed = await new ConfirmModal(
 			this.app,
