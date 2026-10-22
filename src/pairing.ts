@@ -61,10 +61,14 @@ export async function pairDevice(
 	}
 }
 
-/** The person's personal space, created on the server if it does not exist yet. */
+/**
+ * The person's own personal space, created on the server if it does not exist
+ * yet. The list also holds other people's personal spaces shared with them,
+ * which are never chosen, whatever their order.
+ */
 export async function personalSpace(api: NotesApi): Promise<Space> {
 	const spaces = await api.listSpaces();
-	const existing = spaces.find((space) => space.kind === 'personal' && !space.archived);
+	const existing = spaces.find((space) => space.kind === 'personal' && space.role === 'owner' && !space.archived);
 	return existing ?? (await api.ensurePersonalSpace('Personal'));
 }
 
