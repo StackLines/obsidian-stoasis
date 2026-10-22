@@ -1,5 +1,5 @@
 // Applying a frontmatter patch from the server, following the tagging
-// contract `stoasis/2` (section 3 of the server's tagging contract). The
+// contract `stoasis/3` (section 3 of the server's tagging contract). The
 // server normalises a patch; this side checks its shape, then merges it into
 // a note's frontmatter without touching any key the user owns.
 
@@ -24,11 +24,17 @@ const STAMP = 'brain-tagged';
 /** New keys are appended in this order. */
 const APPEND_ORDER: readonly string[] = ['tags', ...SET_KEYS, STAMP];
 
+/** Most tags a patch may remove. */
+const MAX_REMOVALS = 5;
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const SCAN_ACTOR = /^scan:[a-z0-9._-]{1,64}$/;
 
 /** A patch exactly as the contract shapes it. */
 export interface PropertyPatch {
 	tagsAdd: string[];
+	/** Tags to drop from the note, from the scanner only; absent when the patch removes none. */
+	tagsRemove?: string[];
 	/** Only `brain-*` keys of the contract, never `tags` or `brain-tagged`. */
 	set: Record<string, string | string[]>;
 	/** `agent`, or `scan:<alias>` for the server's scanner. */
@@ -44,14 +50,21 @@ export function isScanActor(actor: string): boolean {
  * contract says is refused (null) rather than guessed at.
  */
 export function readPatch(value: unknown): PropertyPatch | null {
-	if (!isRecord(value) || !sameKeys(value, ['tags_add', 'set', 'actor'])) {
+	if (!isRecord(value)) {
 		return null;
 	}
-	const { tags_add: tagsAdd, set, actor } = value;
+	const removes = Object.prototype.hasOwnProperty.call(value, 'tags_remove');
+	if (!sameKeys(value, removes ? ['tags_add', 'tags_remove', 'set', 'actor'] : ['tags_add', 'set', 'actor'])) {
+		return null;
+	}
+	const { tags_add: tagsAdd, tags_remove: tagsRemove, set, actor } = value;
 	if (typeof actor !== 'string' || (actor !== 'agent' && !isScanActor(actor))) {
 		return null;
 	}
 	if (!isStringList(tagsAdd) || !isRecord(set)) {
+		return null;
+	}
+	if (removes && !validRemovals(tagsRemove, tagsAdd, actor)) {
 		return null;
 	}
 	const result: Record<string, string | string[]> = {};
@@ -67,12 +80,26 @@ export function readPatch(value: unknown): PropertyPatch | null {
 		}
 		result[key] = item as string | string[];
 	}
-	return { tagsAdd: [...tagsAdd], set: result, actor };
+	return removes
+		? { tagsAdd: [...tagsAdd], tagsRemove: [...(tagsRemove as string[])], set: result, actor }
+		: { tagsAdd: [...tagsAdd], set: result, actor };
+}
+
+/** The `tags_remove` rules of the contract (section 2.5): scanner only, 1 to 5 tags, none also added. */
+function validRemovals(remove: unknown, add: readonly string[], actor: string): boolean {
+	if (!isScanActor(actor) || !isStringList(remove) || remove.length === 0 || remove.length > MAX_REMOVALS) {
+		return false;
+	}
+	const added = new Set(add.map(normaliseTag));
+	return !remove.some((tag) => {
+		const normalised = normaliseTag(tag);
+		return normalised !== null && added.has(normalised);
+	});
 }
 
 /** True when applying the patch would change nothing in any note: no tags and no keys. */
 export function isEmptyPatch(patch: PropertyPatch): boolean {
-	return patch.tagsAdd.length === 0 && Object.keys(patch.set).length === 0;
+	return patch.tagsAdd.length === 0 && (patch.tagsRemove?.length ?? 0) === 0 && Object.keys(patch.set).length === 0;
 }
 
 /**
@@ -80,24 +107,31 @@ export function isEmptyPatch(patch: PropertyPatch): boolean {
  * stamp, `YYYY-MM-DD`. Returns a new mapping with existing keys in their
  * places and new ones appended in the contract's order, or the input itself
  * when nothing would change.
+ *
+ * `noteId` is the note's own id from the plugin's index of server ids, never
+ * read from the note: it lets a scanner patch replace the id of a copy
+ * (section 3.4). Without it base keys are fill-only.
  */
 export function applyPatch(
 	frontmatter: Readonly<Record<string, unknown>>,
 	patch: PropertyPatch,
 	date: string,
+	noteId?: string,
 ): Readonly<Record<string, unknown>> {
 	const updates = new Map<string, unknown>();
 
-	const tags = mergeTags(frontmatter, patch.tagsAdd);
+	const tags = mergeTags(frontmatter, patch.tagsAdd, patch.tagsRemove ?? []);
 	if (tags !== null) {
 		updates.set('tags', tags);
 	}
+	const copied = isCopy(frontmatter, patch, noteId);
 	for (const [key, value] of Object.entries(patch.set)) {
 		const present = Object.prototype.hasOwnProperty.call(frontmatter, key);
 		const existing = present ? frontmatter[key] : undefined;
 		if (BASE_KEYS.has(key)) {
-			// Fill-only: a present value of any kind, even "" or false, is kept.
-			if (!present || existing === null) {
+			// Fill-only: a present value of any kind, even "" or false, is kept,
+			// except the id and date of a copy, which are replaced (section 3.4).
+			if (!present || existing === null || (copied && (key === 'brain-id' || key === 'brain-created'))) {
 				updates.set(key, value);
 			}
 		} else if (!present || !sameValue(existing, value)) {
@@ -122,8 +156,29 @@ export function applyPatch(
 	return result;
 }
 
-/** The tag list after appending, or null when `tags` stays as written. */
-function mergeTags(frontmatter: Readonly<Record<string, unknown>>, add: readonly string[]): unknown[] | null {
+/**
+ * Whether a scanner patch gives the note its own id in place of another
+ * note's: the patch's id is exactly `noteId`, and the one present is a
+ * lowercase canonical UUID that is not.
+ */
+function isCopy(frontmatter: Readonly<Record<string, unknown>>, patch: PropertyPatch, noteId: string | undefined): boolean {
+	const present = frontmatter['brain-id'];
+	return (
+		noteId !== undefined &&
+		isScanActor(patch.actor) &&
+		patch.set['brain-id'] === noteId &&
+		typeof present === 'string' &&
+		CANONICAL_UUID.test(present) &&
+		present !== noteId
+	);
+}
+
+/** The tag list after removing and appending, or null when `tags` stays as written. */
+function mergeTags(
+	frontmatter: Readonly<Record<string, unknown>>,
+	add: readonly string[],
+	remove: readonly string[],
+): unknown[] | null {
 	const existing = frontmatter['tags'];
 	let current: unknown[];
 	if (Array.isArray(existing)) {
@@ -136,6 +191,14 @@ function mergeTags(frontmatter: Readonly<Record<string, unknown>>, add: readonly
 		// A number, a mapping: not ours to interpret.
 		return null;
 	}
+	// Removals first, by normalised value, every occurrence; other items keep their order.
+	const dropped = new Set(remove.map(normaliseTag).filter((tag): tag is string => tag !== null));
+	const kept = current.filter((tag) => {
+		const normalised = typeof tag === 'string' ? normaliseTag(tag) : null;
+		return normalised === null || !dropped.has(normalised);
+	});
+	const removed = kept.length !== current.length;
+	current = kept;
 	const seen = new Set<string>();
 	for (const tag of current) {
 		const normalised = typeof tag === 'string' ? normaliseTag(tag) : null;
@@ -151,7 +214,7 @@ function mergeTags(frontmatter: Readonly<Record<string, unknown>>, add: readonly
 			appended.push(tag);
 		}
 	}
-	return appended.length > 0 ? [...current, ...appended] : null;
+	return appended.length > 0 || removed ? [...current, ...appended] : null;
 }
 
 /** Tags written as one string: split on commas and whitespace. */
