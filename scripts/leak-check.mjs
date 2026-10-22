@@ -136,7 +136,9 @@ const STANDARD_PREFIXES = new Set([
 function taskIdFindings(line) {
 	/** @type {Finding[]} */
 	const found = [];
-	for (const match of line.matchAll(/\b([A-Z][0-9A-Z]{1,9})-\d{1,6}\b/g)) {
+	// An upper-case UUID starts like a task key; it is not one.
+	const text = line.replace(/\b[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\b/gi, '');
+	for (const match of text.matchAll(/\b([A-Z][0-9A-Z]{1,9})-\d{1,6}\b/g)) {
 		if (!STANDARD_PREFIXES.has(match[1] ?? '')) {
 			found.push({ rule: 'task-id', excerpt: mask(match[0]) });
 		}
