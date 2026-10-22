@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-22
+
 ### Fixed
 
 - Deleting many synced notes at once is held until you confirm, from 25 notes
