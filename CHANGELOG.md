@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The frontmatter patch applier follows version 3 of the tagging contract.
+  It reads scanner patches that remove tags (at most five, matched by
+  normalised value, applied before additions) and can replace the id and date
+  of a copied note when given the note's own id. Neither changes what the
+  plugin does on its own: "Tag this note now" stays add-only. This is the first
+  plugin version that passes the version 3 vectors, so it is the one a server
+  should name as its minimum before it sends removals.
 - The saved setting `folder` becomes `mapping`. An existing folder setting is
   read as a folder mapping, so no space is re-keyed.
 
