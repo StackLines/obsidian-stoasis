@@ -12,15 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Space storage** in the settings tab: how much of its quota your space uses,
   such as "1.2 GB of 10 GB", for any role, with a warning from 90%. It reads
   the usage the server lists with the space and shows nothing when the server
-  does not report it. Tested with simulated settings; not yet tested in
-  Obsidian itself.
+  does not report it. Tested with simulated settings and in desktop Obsidian;
+  not tested on iOS.
 - **Scan progress** in the Brain section while scanning is on: how many of
   your notes wait to be read, whether the scanner is paused, and when the last
   scan ran. The status is read when the settings tab opens and then once a
   minute while it stays open, never faster; it shows nothing on a server
   without it, and a failed read keeps what was shown. It carries counts and
-  times only. Tested with simulated settings; not yet tested in Obsidian
-  itself.
+  times only. Tested with simulated settings and in desktop Obsidian; not
+  tested on iOS.
 - **Stoasis: Note history**, a command (and an entry in the editor menu) for a
   synced note. It lists the note's earlier versions with when, who and why,
   shows how one differs from the note now, and **Restore** writes it back as
