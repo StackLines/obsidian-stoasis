@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	checkIdentity,
 	checkSubject,
 	parseDenylist,
 	OLD_NAME_ALLOWED_LINE,
@@ -242,5 +243,19 @@ describe('paths', () => {
 		expect(scanPath('.github/instructions.md').map((f) => f.rule)).toContain(
 			'unexpected-github-file',
 		);
+	});
+});
+
+describe('commit identities', () => {
+	it('accepts no-reply addresses and flags any other', () => {
+		expect(checkIdentity('1234+someone@users.noreply.github.com')).toEqual([]);
+		expect(checkIdentity('noreply@github.com')).toEqual([]);
+		expect(checkIdentity('someone@example.test').map((f) => f.rule)).toEqual(['commit-identity']);
+		expect(checkIdentity('')).toHaveLength(1);
+	});
+
+	it('never echoes the address in an excerpt', () => {
+		const [finding] = checkIdentity('someone@example.test');
+		expect(finding?.excerpt).not.toContain('someone');
 	});
 });

@@ -69,6 +69,16 @@ note's path inside the synced folder (relative, with `/` separators) to
 `note:<note id>` whose text `content` holds the Markdown. Clients create note
 ids as random version 4 UUIDs.
 
+A space document may also hold a map `meta`, which servers ignore. When it
+holds `root: "vault"`, an `epoch` number and a `prefix` string, the paths in
+`index` start at the vault root, not at a folder. `prefix` is the folder the
+space was synced from before it was moved to the vault, or empty. A client
+that syncs a folder does not touch the index of such a space. A client moves a
+space to the vault root by writing every index path under `prefix` and the
+`meta` map in one transaction, keeping the note ids; a note whose path
+disappears from the index is deleted by the server, so the change is never
+made in steps.
+
 Renaming a note changes only the index; deleting one removes it from the
 index. If concurrent renames leave one note id at several paths, clients keep
 the path that sorts first and remove the others. A client that had changes

@@ -263,7 +263,7 @@ note. It lists the note's earlier versions, newest first, with when each was
 saved, who or what made the change (you, an agent, the scanner) and its
 size. Choose **View** to see the lines that differ from the note now, then
 **Restore this version** to write it back. A restore is one ordinary edit
-that every device merges, so the text it replaces stays in the history. If
+that every device merges, so the text it replaces is usually kept in the history, once it was saved as a version. If
 the note changed while the window was open, the window shows the differences
 again instead of overwriting it. Versions are kept by the server and are as
 private as the note; a device only reads them when you open the window.
