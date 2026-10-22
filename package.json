@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-stoasis",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"description": "Sync Obsidian notes in real time and tag their frontmatter, using a compatible self-hosted server.",
 	"main": "main.js",
 	"type": "module",
