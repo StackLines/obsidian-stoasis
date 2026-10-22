@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A window with the sync status and history: when the server was last reached,
+  the note synced last, and the last 500 uploads and downloads with date and
+  time, name and folder. Open it from the command palette, the status bar or
+  the settings tab. The list stays on the device and holds names and paths
+  only.
+
 ## [0.3.1] - 2026-10-22
 
 ### Fixed

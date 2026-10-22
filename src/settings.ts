@@ -4,6 +4,7 @@ import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import type { ScanMode } from './api';
 import { Brain, describeScanModes, type BrainApi } from './brain';
 import { MAX_DEVICE_LABEL } from './pairing';
+import { emptyActivity, parseActivity, type ActivityData } from './activity';
 import { explainStatus, type SyncSnapshot } from './status';
 import { emptyEngineState, parseEngineState, type EngineState } from './sync/engine';
 import { folderMapping, WHOLE_VAULT, type Mapping } from './sync/paths';
@@ -31,6 +32,8 @@ export interface StoasisSettings {
 	pendingRevocations: PendingRevocation[];
 	/** Folder warnings already shown, as `warningKey` makes them. */
 	folderWarnings: string[];
+	/** What synced lately and when the server was last reached; names and paths only. */
+	activity: ActivityData;
 }
 
 export interface PendingRevocation {
@@ -53,6 +56,7 @@ export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
 	sync: emptyEngineState(),
 	pendingRevocations: [],
 	folderWarnings: [],
+	activity: emptyActivity(),
 };
 
 const STRING_FIELDS = [
@@ -77,6 +81,7 @@ export function parseSettings(data: unknown): StoasisSettings {
 		sync: emptyEngineState(),
 		pendingRevocations: [],
 		folderWarnings: [],
+		activity: emptyActivity(),
 	};
 	if (typeof data !== 'object' || data === null) {
 		return settings;
@@ -89,6 +94,7 @@ export function parseSettings(data: unknown): StoasisSettings {
 		}
 	}
 	settings.mapping = parseMapping(stored['mapping'], stored['folder']);
+	settings.activity = parseActivity(stored['activity']);
 	settings.syncEnabled = stored['syncEnabled'] === true;
 	settings.sync = parseEngineState(stored['sync']);
 	const warnings = stored['folderWarnings'];
@@ -201,6 +207,8 @@ export interface SettingsHost extends Plugin {
 	downloadToDevice(): Promise<void>;
 	/** The server's Brain calls with this device's key; null while not paired. */
 	brainApi(): BrainApi | null;
+	/** Opens the window with the last contact with the server and what synced lately. */
+	showActivity(): void;
 }
 
 const SCAN_MODE_NAMES: ReadonlyArray<[ScanMode, string]> = [
@@ -231,6 +239,11 @@ export class StoasisSettingTab extends PluginSettingTab {
 		const paired = getPairingState(settings) === 'paired';
 
 		this.statusSetting = new Setting(containerEl).setName('Status').setDesc(explainStatus(this.plugin.status()));
+		if (paired) {
+			this.statusSetting.addButton((button) =>
+				button.setButtonText('Sync history').onClick(() => this.plugin.showActivity()),
+			);
+		}
 		if (settings.pendingRevocations.length > 0) {
 			this.showPendingRevocations(settings.pendingRevocations);
 		}

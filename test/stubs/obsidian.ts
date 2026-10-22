@@ -591,6 +591,7 @@ export class Plugin {
 	app: App;
 	manifest: { id: string; version: string };
 	statusItems: ContainerEl[] = [];
+	domEvents: { el: ContainerEl; type: string; callback: () => void }[] = [];
 	protocolHandlers = new Map<string, ProtocolHandler>();
 	settingTabs: unknown[] = [];
 	commands: Array<{ id: string; name: string; editorCheckCallback?: (...args: never[]) => boolean | void }> = [];
@@ -607,6 +608,9 @@ export class Plugin {
 		const item = new ContainerEl();
 		this.statusItems.push(item);
 		return item;
+	}
+	registerDomEvent(el: ContainerEl, type: string, callback: () => void): void {
+		this.domEvents.push({ el, type, callback });
 	}
 	addCommand<T extends { id: string; name: string }>(command: T): T {
 		this.commands.push(command);

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { ActivityEvent } from '../src/activity';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { emptyEngineState, parseEngineState, SyncEngine, type EngineState } from '../src/sync/engine';
 import { FakeVault, MemoryDocSource, MemoryHub } from './helpers/memory-source';
@@ -15,6 +16,7 @@ class Device {
 	source!: MemoryDocSource;
 	engine!: SyncEngine;
 	problems: string[] = [];
+	events: ActivityEvent[] = [];
 	private online: boolean;
 
 	constructor(
@@ -38,6 +40,7 @@ class Device {
 			writeDelayMs: 1,
 			now: () => NOW,
 			onProblem: (message) => this.problems.push(message),
+			onActivity: (event) => this.events.push(event),
 		});
 		this.vault.listener = this.engine;
 		await this.engine.start();
@@ -622,5 +625,57 @@ describe('parseEngineState', () => {
 			}),
 		).toEqual({ known: { 'Good.md': '00000000-0000-4000-8000-000000000001' }, seeded: true });
 		expect(parseEngineState(null)).toEqual(emptyEngineState());
+	});
+
+	describe('activity', () => {
+		const kinds = (device: Device) => device.events.map((e) => `${e.direction} ${e.action} ${e.path}${e.from ? ` from ${e.from}` : ''}`);
+
+		it('reports a new note as an upload here and a download there', async () => {
+			const [, a, b] = await pair();
+			a.vault.write('Synced/Ideas.md', '# Ideas\n');
+			await settle(a, b);
+			expect(kinds(a)).toEqual(['upload new Synced/Ideas.md']);
+			expect(kinds(b)).toEqual(['download new Synced/Ideas.md']);
+		});
+
+		it('reports an edit, a rename and a deletion in both directions', async () => {
+			const [, a, b] = await pair();
+			a.vault.write('Synced/Ideas.md', '# Ideas\n');
+			await settle(a, b);
+			a.events.length = 0;
+			b.events.length = 0;
+
+			a.vault.write('Synced/Ideas.md', '# Ideas\nmore\n');
+			await settle(a, b);
+			expect(kinds(a)).toContain('upload edit Synced/Ideas.md');
+			expect(kinds(b)).toEqual(['download edit Synced/Ideas.md']);
+			a.events.length = 0;
+			b.events.length = 0;
+
+			a.vault.move('Synced/Ideas.md', 'Synced/Plans.md');
+			await settle(a, b);
+			expect(kinds(a)).toEqual(['upload rename Synced/Plans.md from Synced/Ideas.md']);
+			expect(kinds(b)).toEqual(['download rename Synced/Plans.md from Synced/Ideas.md']);
+			a.events.length = 0;
+			b.events.length = 0;
+
+			a.vault.remove('Synced/Plans.md');
+			await settle(a, b);
+			expect(kinds(a)).toEqual(['upload delete Synced/Plans.md']);
+			expect(kinds(b)).toEqual(['download delete Synced/Plans.md']);
+		});
+
+		it('reports nothing for a file that is already in step', async () => {
+			const [, a, b] = await pair();
+			a.vault.write('Synced/Ideas.md', '# Ideas\n');
+			await settle(a, b);
+			a.events.length = 0;
+			b.events.length = 0;
+			await b.stop();
+			await b.start();
+			await settle(a, b);
+			expect(kinds(a)).toEqual([]);
+			expect(kinds(b)).toEqual([]);
+		});
 	});
 });
