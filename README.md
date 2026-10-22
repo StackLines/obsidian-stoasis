@@ -310,6 +310,11 @@ When the device is paired and your server offers them, the settings tab has a
 - **Base metadata** (for the space's owner): whether your server adds base
   properties, such as when a note was created, to new notes. **Add base
   metadata to existing notes** asks it to add them to the notes already there.
+- **Space storage**: how much of your space's quota is used, with a warning at
+  90%. Not shown if your server does not report it.
+- **Scan progress** (while scanning is on): how many notes wait to be read,
+  whether the scanner is paused, and when it last ran. It is read once a
+  minute while the settings tab is open, and carries counts and times only.
 
 The section reloads each time you open the settings tab. If your server does
 not offer these settings, the section is not shown.
@@ -352,7 +357,8 @@ See the [changelog](CHANGELOG.md) for release notes.
 1. **Foundations.** Build, release and a plugin that loads and shows its state.
 2. **Live sync.** Pairing, folders mapped to your server, real-time editing
    and offline changes. *Version 0.2.0 covers one folder, with conflict
-   review and folder warnings; note history and attachments follow.*
+   review and folder warnings. The next version adds the whole vault and note
+   history; attachments follow.*
 3. **Tagging.** Automatic frontmatter tags for synced and unsynced notes.
    *Version 0.2.0 tags a note when you ask, and has the Brain settings.*
 4. **Sharing.** Shared folders with roles.
