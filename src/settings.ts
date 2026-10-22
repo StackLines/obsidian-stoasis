@@ -4,6 +4,7 @@ import { Brain, describeScanModes, type BrainApi } from './brain';
 import { MAX_DEVICE_LABEL } from './pairing';
 import { explainStatus, type SyncSnapshot } from './status';
 import { emptyEngineState, parseEngineState, type EngineState } from './sync/engine';
+import { folderMapping, WHOLE_VAULT, type Mapping } from './sync/paths';
 
 export interface StoasisSettings {
 	/** Server address once paired; empty while the device is not paired. */
@@ -14,11 +15,11 @@ export interface StoasisSettings {
 	deviceLabel: string;
 	/** Name of the person the device was paired for, as the server reported it. */
 	personName: string;
-	/** The personal space synced with `folder`. */
+	/** The personal space synced with `mapping`. */
 	spaceId: string;
 	spaceName: string;
-	/** Vault folder the space is synced with; empty until chosen. */
-	folder: string;
+	/** What the space is synced with, a folder or the whole vault; null until chosen. */
+	mapping: Mapping | null;
 	syncEnabled: boolean;
 	/** Random id naming this vault's local sync storage on the device. */
 	installId: string;
@@ -44,7 +45,7 @@ export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
 	personName: '',
 	spaceId: '',
 	spaceName: '',
-	folder: '',
+	mapping: null,
 	syncEnabled: false,
 	installId: '',
 	sync: emptyEngineState(),
@@ -60,7 +61,6 @@ const STRING_FIELDS = [
 	'personName',
 	'spaceId',
 	'spaceName',
-	'folder',
 	'installId',
 ] as const;
 
@@ -86,6 +86,7 @@ export function parseSettings(data: unknown): StoasisSettings {
 			settings[field] = value;
 		}
 	}
+	settings.mapping = parseMapping(stored['mapping'], stored['folder']);
 	settings.syncEnabled = stored['syncEnabled'] === true;
 	settings.sync = parseEngineState(stored['sync']);
 	const warnings = stored['folderWarnings'];
@@ -102,6 +103,24 @@ export function parseSettings(data: unknown): StoasisSettings {
 		}
 	}
 	return settings;
+}
+
+/**
+ * The stored mapping. Before 0.3 a folder path was kept as `folder`, empty
+ * for none, and it stays what it was; an unusable value maps nothing.
+ */
+function parseMapping(mapping: unknown, legacyFolder: unknown): Mapping | null {
+	if (typeof mapping === 'object' && mapping !== null) {
+		const { kind, path } = mapping as Record<string, unknown>;
+		if (kind === 'vault') {
+			return WHOLE_VAULT;
+		}
+		if (kind === 'folder' && typeof path === 'string' && path !== '') {
+			return folderMapping(path);
+		}
+		return null;
+	}
+	return typeof legacyFolder === 'string' && legacyFolder !== '' ? folderMapping(legacyFolder) : null;
 }
 
 /** Whether two pending revocations are for the same key. */
@@ -145,10 +164,16 @@ export function describePairingState(state: PairingState): string {
 	}
 }
 
+/** Shown by the settings and the plugin where a mapping needs a name. */
+export function describeMapping(mapping: Mapping): string {
+	return mapping.kind === 'vault' ? 'the whole vault' : `the folder "${mapping.path}"`;
+}
+
 /** Name of the folder offered when the vault has none to choose yet. */
 export const SUGGESTED_FOLDER = 'Stoasis';
 // No real folder path starts with a slash.
 const NEW_FOLDER = '/new';
+const WHOLE_VAULT_OPTION = '/vault';
 
 /** What the settings tab needs from the plugin. */
 export interface SettingsHost extends Plugin {
@@ -162,6 +187,11 @@ export interface SettingsHost extends Plugin {
 	/** Asks the server again to revoke the key of a disconnected device. */
 	retryRevocation(): Promise<boolean>;
 	setFolder(folder: string, create: boolean): Promise<void>;
+	/**
+	 * Maps the space to the whole vault after checking that the space can take
+	 * it and asking the user to confirm; false when that did not happen.
+	 */
+	chooseWholeVault(): Promise<boolean>;
 	setSyncEnabled(enabled: boolean): Promise<void>;
 	/** The folder `downloadToDevice` would sync: a new or empty one named after the space. */
 	downloadFolder(): string;
@@ -345,7 +375,8 @@ export class StoasisSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		const settings = this.plugin.settings;
 		new Setting(containerEl).setName('Sync').setHeading();
-		const mapped = settings.folder !== '';
+		const mapping = settings.mapping;
+		const mapped = mapping !== null;
 
 		if (mapped) {
 			new Setting(containerEl)
@@ -360,31 +391,40 @@ export class StoasisSettingTab extends PluginSettingTab {
 		}
 
 		const folders = this.plugin.folders();
+		const wholeVault = mapping?.kind === 'vault';
 		new Setting(containerEl)
 			.setName(mapped ? 'Folder' : 'Or sync an existing folder')
 			.setDesc(
-				mapped
-					? 'Notes in this folder and its subfolders sync with the space. ' +
-							'Choosing another folder merges its notes into the space.'
-					: 'Notes in the folder you choose and its subfolders sync with the space. ' +
-							'Notes already in that folder are added to the space and appear on your other devices.',
+				(wholeVault
+					? 'Choosing a folder downloads the space\'s notes into it and uploads the notes already there as new notes. '
+					: mapped
+						? 'Notes in this folder and its subfolders sync with the space. ' +
+							'Choosing another folder merges its notes into the space. '
+						: 'Notes in the folder you choose and its subfolders sync with the space. ' +
+							'Notes already in that folder are added to the space and appear on your other devices. ') +
+					'Whole vault: every Markdown note in this vault syncs, except Obsidian\'s own settings and hidden folders.',
 			)
 			.addDropdown((dropdown) => {
 				dropdown.addOption('', 'Choose a folder');
+				dropdown.addOption(WHOLE_VAULT_OPTION, 'Whole vault');
 				if (mapped && !folders.includes(SUGGESTED_FOLDER)) {
 					dropdown.addOption(NEW_FOLDER, `New folder: ${SUGGESTED_FOLDER}`);
 				}
 				for (const folder of folders) {
 					dropdown.addOption(folder, folder);
 				}
-				dropdown.setValue(settings.folder).onChange(async (value) => {
-					if (value === NEW_FOLDER) {
-						await this.plugin.setFolder(SUGGESTED_FOLDER, true);
-					} else if (value !== '') {
-						await this.plugin.setFolder(value, false);
-					}
-					this.display();
-				});
+				dropdown
+					.setValue(mapping === null ? '' : mapping.kind === 'vault' ? WHOLE_VAULT_OPTION : mapping.path)
+					.onChange(async (value) => {
+						if (value === WHOLE_VAULT_OPTION) {
+							await this.plugin.chooseWholeVault();
+						} else if (value === NEW_FOLDER) {
+							await this.plugin.setFolder(SUGGESTED_FOLDER, true);
+						} else if (value !== '') {
+							await this.plugin.setFolder(value, false);
+						}
+						this.display();
+					});
 			});
 
 		if (!mapped) {
@@ -392,8 +432,12 @@ export class StoasisSettingTab extends PluginSettingTab {
 			return;
 		}
 		new Setting(containerEl)
-			.setName('Sync this folder')
-			.setDesc('Keep the folder in step with the space on all your devices.')
+			.setName(wholeVault ? 'Sync this vault' : 'Sync this folder')
+			.setDesc(
+				wholeVault
+					? 'Keep the vault in step with the space on all your devices.'
+					: 'Keep the folder in step with the space on all your devices.',
+			)
 			.addToggle((toggle) =>
 				toggle.setValue(settings.syncEnabled).onChange(async (value) => {
 					await this.plugin.setSyncEnabled(value);

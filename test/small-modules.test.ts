@@ -11,6 +11,7 @@ import {
 	parentFolders,
 	toRelative,
 	toVaultPath,
+	folderMapping,
 } from '../src/sync/paths';
 
 describe('status bar', () => {
@@ -187,10 +188,10 @@ describe('paths', () => {
 	});
 
 	it('maps between vault paths and paths in the space', () => {
-		expect(toRelative('Synced', 'Synced/A/b.md')).toBe('A/b.md');
-		expect(toRelative('Synced', 'SyncedOther/b.md')).toBeNull();
-		expect(toRelative('Synced', 'Synced/pic.png')).toBeNull();
-		expect(toVaultPath('Synced', 'A/b.md')).toBe('Synced/A/b.md');
+		expect(toRelative(folderMapping('Synced'), 'Synced/A/b.md')).toBe('A/b.md');
+		expect(toRelative(folderMapping('Synced'), 'SyncedOther/b.md')).toBeNull();
+		expect(toRelative(folderMapping('Synced'), 'Synced/pic.png')).toBeNull();
+		expect(toVaultPath(folderMapping('Synced'), 'A/b.md')).toBe('Synced/A/b.md');
 		expect(parentFolders('a/b/c.md')).toEqual(['a', 'a/b']);
 		expect(parentFolders('c.md')).toEqual([]);
 	});

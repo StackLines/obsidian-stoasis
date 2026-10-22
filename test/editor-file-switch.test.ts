@@ -11,6 +11,7 @@ import { SyncedEditor, isLoad, type EditorViewLike, type ShownFile } from '../sr
 import { EditorSync } from '../src/sync/binding';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
 import { SyncEngine, emptyEngineState, type EngineState } from '../src/sync/engine';
+import { WHOLE_VAULT, type Mapping } from '../src/sync/paths';
 import { replacesMost, setText } from '../src/sync/text';
 import { readPatch } from '../src/frontmatter-patch';
 import { applyToFrontmatter, reviewedFrontmatter, stillReviewed } from '../src/tagging';
@@ -25,6 +26,7 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
+	layout = FOLDER_LAYOUT;
 	for (const cleanup of cleanups.splice(0).reverse()) {
 		await cleanup();
 	}
@@ -49,7 +51,8 @@ async function device(hub: MemoryHub, writeDelayMs = 1): Promise<Device> {
 		vault,
 		source,
 		spaceId: SPACE_ID,
-		folder: 'Notes',
+		mapping: layout.mapping,
+		configDir: '.obsidian',
 		state,
 		saveState: () => {},
 		writeDelayMs,
@@ -231,25 +234,55 @@ class Pane implements EditorViewLike {
 const day = (n: number, tasks: string, notes: string) =>
 	`# Day ${n}\n\n## Tasks\n\n- [ ] Review the inbox\n- [ ] ${tasks}\n\n## Notes\n\n${notes}\n\n## Links\n\n- Previous day\n- Next day\n`;
 
-const ORIGINAL: Record<string, string> = {
-	'Notes/A.md': day(1, 'Write the summary', 'A quiet day.'),
-	'Notes/B.md': day(2, 'Call the supplier', 'The meeting moved to the afternoon.'),
-	'Notes/C.md': day(3, 'Plan the week', 'Nothing else happened.'),
+/** Where the notes of a scenario live, and what the space maps to. */
+interface Layout {
+	mapping: Mapping;
+	/** Notes that sync, by vault path, and the path each has in the space's index. */
+	originals: Record<string, string>;
+	rel: (path: string) => string;
+	/** A file that is not synced. */
+	outside: string;
+}
+
+const FOLDER_LAYOUT: Layout = {
+	mapping: { kind: 'folder', path: 'Notes' },
+	originals: {
+		'Notes/A.md': day(1, 'Write the summary', 'A quiet day.'),
+		'Notes/B.md': day(2, 'Call the supplier', 'The meeting moved to the afternoon.'),
+		'Notes/C.md': day(3, 'Plan the week', 'Nothing else happened.'),
+	},
+	rel: (path) => path.slice('Notes/'.length),
+	outside: 'Elsewhere/Other.md',
 };
-const OUTSIDE = 'Elsewhere/Other.md';
+
+/** The whole vault: a note at the root, one in a folder and one in a folder below it. */
+const VAULT_LAYOUT: Layout = {
+	mapping: WHOLE_VAULT,
+	originals: {
+		'A.md': FOLDER_LAYOUT.originals['Notes/A.md'] as string,
+		'Work/B.md': FOLDER_LAYOUT.originals['Notes/B.md'] as string,
+		'Work/Deep/C.md': FOLDER_LAYOUT.originals['Notes/C.md'] as string,
+	},
+	rel: (path) => path,
+	outside: '.trash/Other.md',
+};
+
+let layout = FOLDER_LAYOUT;
+const ORIGINAL: Record<string, string> = FOLDER_LAYOUT.originals;
+const OUTSIDE = FOLDER_LAYOUT.outside;
 const OUTSIDE_TEXT = 'A file that is not synced, with text of its own.\n';
 
 async function pair(): Promise<{ hub: MemoryHub; a: Device; b: Device }> {
 	const hub = new MemoryHub();
 	const a = await device(hub);
 	const b = await device(hub);
-	for (const [path, text] of Object.entries(ORIGINAL)) {
+	for (const [path, text] of Object.entries(layout.originals)) {
 		a.vault.write(path, text);
 	}
-	a.vault.write(OUTSIDE, OUTSIDE_TEXT);
+	a.vault.write(layout.outside, OUTSIDE_TEXT);
 	await settle(a, b);
-	for (const path of Object.keys(ORIGINAL)) {
-		expect(b.vault.files.get(path)).toBe(ORIGINAL[path]);
+	for (const path of Object.keys(layout.originals)) {
+		expect(b.vault.files.get(path)).toBe(layout.originals[path]);
 	}
 	return { hub, a, b };
 }
@@ -257,8 +290,8 @@ async function pair(): Promise<{ hub: MemoryHub; a: Device; b: Device }> {
 /** Every note keeps its own text: in the shared text and on both devices' disks. */
 function expectIntact(hub: MemoryHub, ...devices: Device[]): void {
 	const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
-	for (const [path, text] of Object.entries(ORIGINAL)) {
-		const rel = path.slice('Notes/'.length);
+	for (const [path, text] of Object.entries(layout.originals)) {
+		const rel = layout.rel(path);
 		const id = index[rel]?.id;
 		expect(id, rel).toBeDefined();
 		expect(hub.text(noteDocName(id as string)), `shared text of ${rel}`).toBe(text);
@@ -266,8 +299,8 @@ function expectIntact(hub: MemoryHub, ...devices: Device[]): void {
 			expect(d.vault.files.get(path), `${rel} on device ${i}`).toBe(text);
 		});
 	}
-	expect(devices[0]?.vault.files.get(OUTSIDE)).toBe(OUTSIDE_TEXT);
-	expect(Object.keys(index).sort()).toEqual(['A.md', 'B.md', 'C.md']);
+	expect(devices[0]?.vault.files.get(layout.outside)).toBe(OUTSIDE_TEXT);
+	expect(Object.keys(index).sort()).toEqual(Object.keys(layout.originals).map(layout.rel).sort());
 }
 
 /**
@@ -530,6 +563,56 @@ describe('switching files in one editor', () => {
 		expect(hub.text(noteDocName(index['B.md']!.id))).toBe(edited);
 		expect(b.vault.files.get('Notes/B.md')).toBe(edited);
 		expect(a.problems).toEqual([]);
+	});
+});
+
+describe('switching files in one editor, with the whole vault mapped', () => {
+	// The same scenarios from the vault root: a note at the root, in a folder
+	// and in a folder below it, and a file in a hidden folder that never syncs.
+	for (const [name, how] of ORDERINGS) {
+		it(`keeps every note's own text: ${name}`, async () => {
+			layout = VAULT_LAYOUT;
+			const { hub, a, b } = await pair();
+			const pane = new Pane(a.editors, a.vault, 'A.md');
+			await settle(a, b);
+			for (const file of ['Work/B.md', 'Work/Deep/C.md', VAULT_LAYOUT.outside, 'A.md', 'Work/Deep/C.md']) {
+				await open(pane, file, hub, how, a, b);
+				expectIntact(hub, a, b);
+			}
+			pane.close();
+			await settle(a, b);
+			expectIntact(hub, a, b);
+			expect(a.problems).toEqual([]);
+		});
+	}
+
+	it('keeps typing in a note at the root where it is when the note moves into a folder', async () => {
+		layout = VAULT_LAYOUT;
+		const { hub, a, b } = await pair();
+		const pane = new Pane(a.editors, a.vault, 'A.md');
+		await settle(a, b);
+		const [, how] = ORDERINGS[0] as [string, Switch];
+		await open(pane, 'A.md', hub, how, a, b);
+		pane.type(0, 'typed at the root. ');
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		const typed = `typed at the root. ${VAULT_LAYOUT.originals['A.md']}`;
+		expect(b.vault.files.get('A.md')).toBe(typed);
+
+		a.vault.move('A.md', 'Work/A.md');
+		renameFileObject(a.vault, 'A.md', 'Work/A.md');
+		await settle(a, b);
+		pane.type(0, 'and in the folder. ');
+		await settle(a, b);
+		pane.save();
+		await settle(a, b);
+		expect(b.vault.files.get('Work/A.md')).toBe(`and in the folder. ${typed}`);
+		expect(b.vault.files.has('A.md')).toBe(false);
+		const index = hub.doc(spaceDocName(SPACE_ID)).getMap('index').toJSON() as Record<string, { id: string }>;
+		expect(Object.keys(index).sort()).toEqual(['Work/A.md', 'Work/B.md', 'Work/Deep/C.md']);
+		expect(a.problems).toEqual([]);
+		pane.close();
 	});
 });
 

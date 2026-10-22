@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Whole vault**: the space can map to the entire vault instead of one
+  folder. Every Markdown note syncs, at the same path in the space, except
+  Obsidian's configuration folder and hidden folders. Choose **Whole vault**
+  in the settings tab; a window states how many notes will be uploaded and
+  asks first, with a longer warning above 500 notes. Only a space with
+  no notes can be mapped to the vault (a note's path in the space is relative
+  to the folder a device syncs), because a second space cannot be made.
+  Renaming or deleting a folder inside the vault moves or deletes its notes
+  and sync keeps running. Folder warnings are worded for the vault.
+  Many notes missing from the vault at once, as when a folder is deleted or a
+  sync tool evicts files, are held until you confirm deleting them everywhere.
+  Switching from the vault to a folder asks first.
+  Tested with simulated devices and a real sync server, 2,500 notes; not yet
+  tested in Obsidian itself.
+
+### Changed
+
+- The saved setting `folder` becomes `mapping`. An existing folder setting is
+  read as a folder mapping, so no space is re-keyed.
+
 ## [0.2.0] - 2026-10-16
 
 Tags a note when you ask, adds the Brain settings, and lets you choose

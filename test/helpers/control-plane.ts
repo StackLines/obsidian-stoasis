@@ -16,6 +16,8 @@ export class FakeControlPlane {
 	/** Sync token handed out for every valid key. */
 	syncToken = 'good';
 	spaces: Array<Record<string, unknown>> = [];
+	/** What the server counts for the space's notes; zero for a space that never held one. */
+	notesBytes = 0;
 	/** The answer to suggest-properties for a note's text. */
 	suggest: (markdown: string) => { status: number; body: unknown } = () => ({
 		status: 200,
@@ -33,6 +35,17 @@ export class FakeControlPlane {
 	private nextKey = 1;
 
 	constructor(readonly server: string) {}
+
+	private usage(): Record<string, number> {
+		return {
+			notes_bytes: this.notesBytes,
+			versions_bytes: 0,
+			attachments_bytes: 0,
+			derived_bytes: 0,
+			total_bytes: this.notesBytes,
+			quota_bytes: 10737418240,
+		};
+	}
 
 	handle = (request: RequestUrlParam): RequestUrlResponse => {
 		const prefix = `${this.server}/notes/api`;
@@ -69,7 +82,7 @@ export class FakeControlPlane {
 			return json(200, { token: this.syncToken, expires_at: '2099-01-01T00:00:00Z' });
 		}
 		if (method === 'GET' && path === '/spaces') {
-			return json(200, { spaces: this.spaces });
+			return json(200, { spaces: this.spaces.map((space) => ({ ...space, usage: this.usage() })) });
 		}
 		if (method === 'POST' && path === '/spaces') {
 			if (this.spaces.length === 0) {
@@ -83,7 +96,7 @@ export class FakeControlPlane {
 					...(this.baseMetadataLive ? { base_metadata: true, base_backfill_requested: false } : {}),
 				});
 			}
-			return json(201, this.spaces[0] ?? {});
+			return json(201, { ...this.spaces[0], usage: this.usage() });
 		}
 		if (method === 'POST' && path === '/suggest-properties') {
 			const body = JSON.parse(request.body ?? '{}') as { markdown: string };
