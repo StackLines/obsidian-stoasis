@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Deleting many synced notes at once is held until you confirm, from 25 notes
+  whatever share of the vault they are (it also required a quarter of it
+  before), and for a synced folder as well as the whole vault.
 - Pairing and loading the space now pick the space you own. A personal space
   that another person shared with you could be chosen when it was listed first,
   and the whole vault would have been uploaded into it. If you own no space,
@@ -114,6 +117,9 @@ between a conflict copy and its note.
 
 ### Fixed
 
+- Deleting many synced notes at once is held until you confirm, from 25 notes
+  whatever share of the vault they are (it was also required that they be a
+  quarter of it), and for a synced folder as well as the whole vault.
 - Renaming a note so that only the case of its name changes (`note.md` to
   `Note.md`) failed on devices whose file system ignores case, as on macOS,
   iOS and Windows.

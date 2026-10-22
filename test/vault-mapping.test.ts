@@ -321,7 +321,7 @@ describe('SyncEngine mapped to the whole vault', () => {
 			expect(Object.keys(indexOf(hub))).toHaveLength(MANY + 30);
 		});
 
-		it('does not hold deletions under a folder mapping', async () => {
+		it('holds a small share of a large vault too, and a folder mapping', async () => {
 			const hub = new MemoryHub();
 			const a = new Device(hub, folderMapping('Notes'));
 			const b = new Device(hub, folderMapping('Notes'));
@@ -335,8 +335,22 @@ describe('SyncEngine mapped to the whole vault', () => {
 				a.vault.remove(`Notes/${n}.md`);
 			}
 			await settle(a, b);
-			expect(a.held).toEqual([]);
+			expect(a.held).toEqual([MANY]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(MANY);
+
+			a.engine.releaseHeld();
+			await settle(a, b);
 			expect(Object.keys(indexOf(hub))).toHaveLength(0);
+		});
+
+		it('holds notes that are far below a quarter of the vault', async () => {
+			const [hub, a, b] = await vaultOf(MANY * 6);
+			for (let n = 0; n < MANY; n++) {
+				a.vault.remove(`Big/${n}.md`);
+			}
+			await settle(a, b);
+			expect(a.held).toEqual([MANY]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(MANY * 7);
 		});
 	});
 
@@ -438,6 +452,7 @@ describe('first sync of a large vault', () => {
 		vault.files.set('Inbox.md', 'root');
 		const state = emptyEngineState();
 		const engine = new SyncEngine({
+			deleteBatchMs: 1,
 			vault,
 			source,
 			spaceId: SPACE_ID,
