@@ -17,7 +17,7 @@
 
 The name joins *stoa*, the covered walkway where people met to think together, with *oasis*: a shared oasis for your notes.
 
-> **Early development.** Version 0.3.1 is a preview that syncs. It
+> **Early development.** Version 0.3.2 is a preview that syncs. It
 > pairs with your server, keeps one folder or the whole vault in step with
 > your personal space, offline edits included, restores earlier versions of a
 > note, and tags a note when you ask. Sharing is not available yet. See [Status](#status).
@@ -39,10 +39,10 @@ The name joins *stoa*, the covered walkway where people met to think together, w
 | Pairing with a compatible server, by link or by typed code | shipped |
 | Refusing to sync with a server that needs a newer plugin | shipped |
 | Live sync of one folder with your personal space | shipped |
-| Syncing the whole vault, with a guard against mass deletions | unreleased |
-| Note history: comparing an earlier version and restoring it | unreleased |
-| Space storage and scan progress in the Brain settings | unreleased |
-| Sync status and history: last server contact, last note synced, what went up and down | unreleased |
+| Syncing the whole vault, with a guard against mass deletions | shipped |
+| Note history: comparing an earlier version and restoring it | shipped |
+| Space storage and scan progress in the Brain settings | shipped |
+| Sync status and history: last server contact, last note synced, what went up and down | shipped |
 | Offline editing with merge on reconnect | shipped |
 | Edits made outside Obsidian merged with edits from other devices | shipped |
 | Comparing a conflict copy with its note and keeping one of them | shipped |
@@ -332,7 +332,7 @@ not offer these settings, the section is not shown.
 
 ## Status
 
-**Current version:** `0.3.1`
+**Current version:** `0.3.2`
 
 What works today:
 
@@ -367,11 +367,11 @@ See the [changelog](CHANGELOG.md) for release notes.
 
 1. **Foundations.** Build, release and a plugin that loads and shows its state.
 2. **Live sync.** Pairing, folders mapped to your server, real-time editing
-   and offline changes. *Version 0.3.1 covers one folder or the whole
+   and offline changes. *Version 0.3.2 covers one folder or the whole
    vault, with conflict review, folder warnings and note history; attachments
    follow.*
 3. **Tagging.** Automatic frontmatter tags for synced and unsynced notes.
-   *Version 0.3.1 tags a note when you ask, and has the Brain settings.*
+   *Version 0.3.2 tags a note when you ask, and has the Brain settings.*
 4. **Sharing.** Shared folders with roles.
 
 ## Development
