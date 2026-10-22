@@ -272,10 +272,10 @@ const SUBJECT_EXEMPT =
 	/^(?:Merge |Revert "|fixup! |squash! |\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$)/;
 const MAX_SUBJECT_LENGTH = 72;
 
-// Commits already published with a personal address. They are reported by the
+// Commits already published with a local-machine address. They are reported by the
 // review that found them and cannot be changed without rewriting published
 // history; every later commit is checked.
-const KNOWN_IDENTITY_COMMITS = new Set(['07517ee', '08d3690']);
+const KNOWN_IDENTITY_COMMITS = new Set(['fd2a939', '08d3690']);
 
 /**
  * Checks an author or committer address: only a no-reply address belongs in
