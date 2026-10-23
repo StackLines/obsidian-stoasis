@@ -301,6 +301,20 @@ describe('SyncEngine mapped to the whole vault', () => {
 			expect(Object.keys(indexOf(hub))).toHaveLength(6);
 		});
 
+		it('holds a small vault that disappears while running', async () => {
+			const [hub, a, b] = await pair();
+			for (let n = 0; n < 6; n++) {
+				a.vault.write(`Few/${n}.md`, `note ${n}`);
+			}
+			await settle(a, b);
+			for (let n = 0; n < 6; n++) {
+				a.vault.remove(`Few/${n}.md`);
+			}
+			await settle(a, b);
+			expect(a.held).toEqual([6]);
+			expect(Object.keys(indexOf(hub))).toHaveLength(6);
+		});
+
 		it('moves a folder of notes into a hidden folder as a hold, not a delete', async () => {
 			const [hub, a, b] = await vaultOf();
 			for (let n = 0; n < MANY; n++) {
