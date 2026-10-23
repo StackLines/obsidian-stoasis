@@ -9,12 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A device that version 0.3.0 linked to a space another person shared with you
+  is noticed at the next start: sync does not run for it, and a message asks
+  you to disconnect and pair again. Nothing switches spaces silently.
 - Confirming "Delete notes everywhere?" deletes the notes the question named,
   not also those that went missing while it was open; those get their own
   question.
-
-### Fixed
-
 - Notes deleted one by one are held like a sudden mass delete: deletions
   applied within the last minute count towards the 25-note limit, so a cloud
   app evicting files slowly no longer slips past the question.
