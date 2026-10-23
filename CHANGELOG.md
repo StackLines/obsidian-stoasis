@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Download to this device** on a space that syncs a whole vault asks about
   syncing the whole vault, as it would on a device that syncs a folder, instead
   of creating a folder and then asking to follow.
+- A folder device no longer adds notes to the index of a space that moved to
+  the vault root while it was reading files, which could add notes under the
+  wrong paths.
 - A small vault (5 to 24 notes) that disappears while Obsidian runs, such as an
   unmounted disk, is held like one found empty at start, not deleted
   everywhere.

@@ -729,15 +729,25 @@ export class SyncEngine {
 			await this.reconcile();
 			return;
 		}
-		await this.addLocalNote(rel);
+		await this.addFile(rel);
+	}
+
+	/** Makes a file found on disk a new note, unless the space moved to the vault root while it was read. */
+	private async addFile(rel: string): Promise<void> {
+		const disk = await this.vault.read(this.path(rel));
+		if (this.moved) {
+			return;
+		}
+		await this.addLocalNote(rel, undefined, disk);
 	}
 
 	/**
 	 * Makes the file at `rel` a new note and returns its id. The note holds
-	 * `text` when given, which the file does not hold yet, or else the file's.
+	 * `text` when given, which the file does not hold yet, or else the file's;
+	 * `read` is the file's text when the caller has read it already.
 	 */
-	private async addLocalNote(rel: string, text?: string): Promise<string> {
-		const disk = await this.vault.read(this.path(rel));
+	private async addLocalNote(rel: string, text?: string, read?: string): Promise<string> {
+		const disk = read ?? (await this.vault.read(this.path(rel)));
 		const id = newNoteId();
 		// List the note, open it and fill it in one step, with no wait between:
 		// - listed first, because the server lets a device open a new note only
@@ -1382,13 +1392,13 @@ export class SyncEngine {
 			}
 		}
 		for (const rel of onDisk) {
-			if (this.stopped) {
+			if (this.stopped || this.moved) {
 				return;
 			}
 			if (this.state.known[rel] !== undefined) {
 				await this.diskModified(rel);
 			} else if (this.entry(rel) === null) {
-				await this.addLocalNote(rel);
+				await this.addFile(rel);
 			}
 		}
 		await this.deleteOrHold(

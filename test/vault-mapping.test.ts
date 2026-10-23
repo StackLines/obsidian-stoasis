@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 import WebSocket from 'ws';
 import { noteDocName, spaceDocName } from '../src/sync/docs';
+import { markVaultRooted } from '../src/sync/root';
 import { emptyEngineState, MASS_DELETE_MIN, parseEngineState, SyncEngine, type EngineState } from '../src/sync/engine';
 import { HocuspocusDocSource } from '../src/sync/hocuspocus';
 import {
@@ -540,4 +541,63 @@ describe('first sync of a large vault', () => {
 		expect(stored.getMap('index').size).toBe(total + 1);
 		expect(server.text(noteDocName(state.known['Inbox.md'] ?? ''))).toBe('root');
 	}, 150_000);
+});
+
+describe('a folder device whose space starts at the vault root meanwhile', () => {
+	const NOTES = folderMapping('Notes');
+	const rooted = (hub: MemoryHub) => markVaultRooted(hub.doc(spaceDocName(SPACE_ID)), 'origin');
+
+	async function folderDevice(files: Record<string, string> = {}): Promise<[MemoryHub, Device]> {
+		const hub = new MemoryHub();
+		const a = new Device(hub, NOTES);
+		await a.start();
+		for (const [path, text] of Object.entries(files)) {
+			a.vault.write(path, text);
+		}
+		await settle(a);
+		return [hub, a];
+	}
+
+	it('writes no new note to the index when the marker comes while a new file is read', async () => {
+		const [hub, a] = await folderDevice({ 'Notes/Old.md': 'old' });
+		const before = indexOf(hub);
+		a.vault.ioDelayMs = 40;
+		a.vault.write('Notes/New.md', 'new');
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		rooted(hub);
+		await settle(a);
+		expect(indexOf(hub)).toEqual(before);
+	});
+
+	it('writes nothing while the first scan reads files', async () => {
+		const [hub, a] = await folderDevice({ 'Notes/Old.md': 'old' });
+		await a.stop();
+		const before = indexOf(hub);
+		a.vault.write('Notes/Late.md', 'late');
+		a.vault.ioDelayMs = 40;
+		const starting = a.start();
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		rooted(hub);
+		await starting;
+		await settle(a);
+		expect(indexOf(hub)).toEqual(before);
+	});
+
+	it('writes nothing for a rename made after the marker', async () => {
+		const [hub, a] = await folderDevice({ 'Notes/Old.md': 'old' });
+		rooted(hub);
+		const before = indexOf(hub);
+		a.vault.move('Notes/Old.md', 'Notes/Renamed.md');
+		await settle(a);
+		expect(indexOf(hub)).toEqual(before);
+	});
+
+	it('writes nothing for a deletion made after the marker', async () => {
+		const [hub, a] = await folderDevice({ 'Notes/Old.md': 'old' });
+		rooted(hub);
+		const before = indexOf(hub);
+		a.vault.remove('Notes/Old.md');
+		await settle(a);
+		expect(indexOf(hub)).toEqual(before);
+	});
 });
