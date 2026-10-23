@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Confirming "Delete notes everywhere?" deletes the notes the question named,
   not also those that went missing while it was open; those get their own
   question.
+- The settings text of a whole-vault space no longer says that choosing a
+  folder downloads notes into it: a whole-vault space cannot be synced as a
+  folder again, and the confirmations for choosing the whole vault say so.
 - A small vault (5 to 24 notes) that disappears while Obsidian runs, such as an
   unmounted disk, is held like one found empty at start, not deleted
   everywhere.
