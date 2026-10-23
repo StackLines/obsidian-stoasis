@@ -311,6 +311,20 @@ describe('SyncEngine mapped to the whole vault', () => {
 			expect(Object.keys(indexOf(hub))).toHaveLength(MANY);
 		});
 
+		it('holds notes deleted slowly, a few at a time', async () => {
+			const [hub, a, b] = await vaultOf(70);
+			for (let batch = 0; batch < 20; batch++) {
+				for (let n = 0; n < 5; n++) {
+					a.vault.remove(`Big/${batch * 5 + n}.md`);
+				}
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			await settle(a, b);
+			expect(a.held.length).toBeGreaterThan(0);
+			// 20 batches of 5: only those before the 25th deletion were applied.
+			expect(Object.keys(indexOf(hub)).length).toBeGreaterThanOrEqual(MANY + 70 - MASS_DELETE_MIN);
+		});
+
 		it('deletes a few notes at once without asking', async () => {
 			const [hub, a, b] = await vaultOf(40);
 			for (let n = 0; n < 10; n++) {

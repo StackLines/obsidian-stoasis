@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Notes deleted one by one are held like a sudden mass delete: deletions
+  applied within the last minute count towards the 25-note limit, so a cloud
+  app evicting files slowly no longer slips past the question.
+
 ## [0.3.2] - 2026-10-23
 
 ### Added
