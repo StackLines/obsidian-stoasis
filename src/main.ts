@@ -10,7 +10,7 @@ import {
 	TFolder,
 	type Editor,
 } from 'obsidian';
-import { ApiError, NotesApi } from './api';
+import { ApiError, NotesApi, type Space } from './api';
 import { HistoryModal } from './history-modal';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
@@ -134,6 +134,8 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	private saveTimer: number | null = null;
 	private rescanTimer: number | null = null;
 	private retryTimer: number | null = null;
+	/** The space last confirmed to be owned by this person, in this run. */
+	private ownedSpaceId = '';
 	private downloadTimer: number | null = null;
 	private revokeTimer: number | null = null;
 	private revoking: Promise<boolean> | null = null;
@@ -1011,6 +1013,32 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		}
 	}
 
+	/**
+	 * Plugin 0.3.0 could link a device to a space another person shared with it.
+	 * Asks the server whether the stored space is owned by this person; once per
+	 * run and space. 'unknown' means the server could not tell.
+	 */
+	private async ownsSpace(spaceId: string): Promise<'yes' | 'no' | 'unknown'> {
+		if (this.ownedSpaceId === spaceId) {
+			return 'yes';
+		}
+		const api = new NotesApi(obsidianHttp, this.settings.serverUrl, this.settings.deviceKey);
+		let spaces: Space[];
+		try {
+			spaces = await api.listSpaces();
+		} catch (error) {
+			if (error instanceof ApiError && error.kind === 'unauthenticated') {
+				new Notice(describeApiError(error));
+			}
+			return 'unknown';
+		}
+		if (spaces.some((space) => space.id === spaceId && space.role === 'owner')) {
+			this.ownedSpaceId = spaceId;
+			return 'yes';
+		}
+		return 'no';
+	}
+
 	// Sync.
 
 	private restartSync(): void {
@@ -1057,7 +1085,20 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			}
 			await this.saveSettings();
 		}
+		const owns = await this.ownsSpace(settings.spaceId);
 		if (this.unloaded) {
+			return;
+		}
+		if (owns !== 'yes') {
+			if (owns === 'no') {
+				new Notice('This device syncs a space you do not own. Choose Disconnect and pair again.', 0);
+			} else {
+				this.retryTimer = window.setTimeout(() => {
+					this.retryTimer = null;
+					this.restartSync();
+				}, SPACE_RETRY_MS);
+			}
+			this.updateStatus();
 			return;
 		}
 
