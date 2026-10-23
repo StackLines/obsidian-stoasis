@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Groundwork for sharing: the settings keep a folder for notes other people
+  share with you ("Shared with me" by default) and a list of what is added
+  from it. That folder is never part of the notes you sync yourself, whether
+  you sync the whole vault or a folder that contains it, and it cannot be
+  chosen as the synced folder. Nothing is added to it yet.
+
 ## [0.3.3] - 2026-10-23
 
 ### Fixed
