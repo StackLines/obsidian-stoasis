@@ -325,6 +325,43 @@ describe('SyncEngine mapped to the whole vault', () => {
 			expect(Object.keys(indexOf(hub)).length).toBeGreaterThanOrEqual(MANY + 70 - MASS_DELETE_MIN);
 		});
 
+		it('deletes only the notes it asked about when the question was open for more', async () => {
+			const [hub, a, b] = await vaultOf(10);
+			for (let n = 0; n < MANY; n++) {
+				a.vault.remove(`Big/${n}.md`);
+			}
+			await settle(a, b);
+			expect(a.held).toEqual([MANY]);
+
+			for (let n = MANY; n < MANY + 3; n++) {
+				a.vault.remove(`Big/${n}.md`);
+			}
+			await settle(a, b);
+			a.engine.releaseHeld();
+			await settle(a, b);
+			expect(Object.keys(indexOf(hub))).toHaveLength(10);
+			expect(a.held).toEqual([MANY, 3]);
+
+			a.engine.releaseHeld();
+			await settle(a, b);
+			expect(Object.keys(indexOf(hub))).toHaveLength(7);
+		});
+
+		it('does not ask again about notes put back while the question was open', async () => {
+			const [, a, b] = await vaultOf(10);
+			for (let n = 0; n < MANY; n++) {
+				a.vault.remove(`Big/${n}.md`);
+			}
+			await settle(a, b);
+			a.vault.remove(`Big/${MANY}.md`);
+			await settle(a, b);
+			a.vault.write(`Big/${MANY}.md`, `note ${MANY}`);
+			await settle(a, b);
+			a.engine.releaseHeld();
+			await settle(a, b);
+			expect(a.held).toEqual([MANY]);
+		});
+
 		it('deletes a few notes at once without asking', async () => {
 			const [hub, a, b] = await vaultOf(40);
 			for (let n = 0; n < 10; n++) {

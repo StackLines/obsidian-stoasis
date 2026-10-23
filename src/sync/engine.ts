@@ -244,6 +244,8 @@ export class SyncEngine {
 	private stopped = false;
 	/** Notes missing from disk under the whole vault, not yet deleted from the space. */
 	private held = new Set<string>();
+	/** The held notes the user was asked about; only these are deleted on a yes. */
+	private asked = new Set<string>();
 	/** When notes were last deleted from the space for missing on disk, in ms. */
 	private recentDeletes: number[] = [];
 	private deciding = false;
@@ -503,10 +505,7 @@ export class SyncEngine {
 			for (const rel of gone) {
 				this.held.add(rel);
 			}
-			if (!this.deciding && this.held.size > 0) {
-				this.deciding = true;
-				this.options.onMassDelete?.(this.held.size);
-			}
+			this.askAboutHeld();
 			return;
 		}
 		for (const rel of gone) {
@@ -517,14 +516,38 @@ export class SyncEngine {
 
 	/** Deletes the held notes from the space, as the user asked. */
 	releaseHeld(): void {
-		const held = [...this.held];
-		this.held.clear();
+		const asked = [...this.asked];
+		for (const rel of asked) {
+			this.held.delete(rel);
+		}
+		this.asked.clear();
 		this.deciding = false;
 		void this.enqueue(async () => {
-			for (const rel of held) {
+			for (const rel of asked) {
 				await this.diskDeleted(rel);
 			}
+			// Notes that went missing while the question was open were not part of it.
+			this.askAboutHeld();
 		});
+	}
+
+	/** Asks about the notes held, one question at a time; later ones wait for their own. */
+	private askAboutHeld(): void {
+		if (this.deciding) {
+			return;
+		}
+		for (const rel of [...this.held]) {
+			// Put back meanwhile: nothing to delete.
+			if (this.vault.exists(this.path(rel)) || this.state.known[rel] === undefined) {
+				this.held.delete(rel);
+			}
+		}
+		if (this.held.size === 0) {
+			return;
+		}
+		this.deciding = true;
+		this.asked = new Set(this.held);
+		this.options.onMassDelete?.(this.asked.size);
 	}
 
 	/** Checks the folder against what the engine knows, as at startup. */
