@@ -8,6 +8,7 @@ import { emptyActivity, parseActivity, type ActivityData } from './activity';
 import { explainStatus, type SyncSnapshot } from './status';
 import { emptyEngineState, parseEngineState, type EngineState } from './sync/engine';
 import { folderMapping, WHOLE_VAULT, type Mapping } from './sync/paths';
+import { DEFAULT_SHARED_ROOT, parseShared, parseSharedRoot, type SharedMapping } from './shared';
 
 export interface StoasisSettings {
 	/** Server address once paired; empty while the device is not paired. */
@@ -32,6 +33,10 @@ export interface StoasisSettings {
 	pendingRevocations: PendingRevocation[];
 	/** Folder warnings already shown, as `warningKey` makes them. */
 	folderWarnings: string[];
+	/** The folder shared notes and spaces are kept in; never part of the own mapping. */
+	sharedRoot: string;
+	/** What other people shared that this vault keeps; added on request only. */
+	shared: SharedMapping[];
 	/** What synced lately and when the server was last reached; names and paths only. */
 	activity: ActivityData;
 }
@@ -56,6 +61,8 @@ export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
 	sync: emptyEngineState(),
 	pendingRevocations: [],
 	folderWarnings: [],
+	sharedRoot: DEFAULT_SHARED_ROOT,
+	shared: [],
 	activity: emptyActivity(),
 };
 
@@ -81,6 +88,7 @@ export function parseSettings(data: unknown): StoasisSettings {
 		sync: emptyEngineState(),
 		pendingRevocations: [],
 		folderWarnings: [],
+		shared: [],
 		activity: emptyActivity(),
 	};
 	if (typeof data !== 'object' || data === null) {
@@ -95,6 +103,8 @@ export function parseSettings(data: unknown): StoasisSettings {
 	}
 	settings.mapping = parseMapping(stored['mapping'], stored['folder']);
 	settings.activity = parseActivity(stored['activity']);
+	settings.sharedRoot = parseSharedRoot(stored['sharedRoot']);
+	settings.shared = parseShared(stored['shared']);
 	settings.syncEnabled = stored['syncEnabled'] === true;
 	settings.sync = parseEngineState(stored['sync']);
 	const warnings = stored['folderWarnings'];

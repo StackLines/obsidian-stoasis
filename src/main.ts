@@ -314,6 +314,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			.getAllFolders(false)
 			.map((folder) => folder.path)
 			.filter((path) => path !== configDir && !path.startsWith(`${configDir}/`))
+			.filter((path) => !isWithin(this.settings.sharedRoot, path))
 			.sort((a, b) => a.localeCompare(b));
 	}
 
@@ -383,6 +384,10 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	async setFolder(folder: string, create: boolean): Promise<void> {
+		if (isWithin(this.settings.sharedRoot, folder)) {
+			new Notice(`Stoasis: "${folder}" holds notes other people shared with you, so it cannot be your synced folder.`);
+			return;
+		}
 		const mapping = folderMapping(folder);
 		if (sameMapping(mapping, this.settings.mapping)) {
 			return;
@@ -493,7 +498,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		const folder = mapping.path;
 		const inside = this.app.vault
 			.getMarkdownFiles()
-			.filter((file) => toRelative(mapping, file.path, configDir) !== null).length;
+			.filter((file) => toRelative(mapping, file.path, configDir, this.settings.sharedRoot) !== null).length;
 		const outside = inVault - inside;
 		const confirmed = await new ConfirmModal(
 			this.app,
@@ -624,7 +629,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		const configDir = this.app.vault.configDir;
 		return this.app.vault
 			.getMarkdownFiles()
-			.filter((file) => toRelative(WHOLE_VAULT, file.path, configDir) !== null).length;
+			.filter((file) => toRelative(WHOLE_VAULT, file.path, configDir, this.settings.sharedRoot) !== null).length;
 	}
 
 	brainApi(): NotesApi | null {
@@ -986,13 +991,15 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	private forgetPairing(): void {
 		// Which folder warnings were shown is about this device, not the pairing.
-		const { installId, pendingRevocations, folderWarnings } = this.settings;
+		const { installId, pendingRevocations, folderWarnings, sharedRoot } = this.settings;
 		// A folder stays; the whole vault is chosen per space, after its check and window.
 		const mapping = this.settings.mapping?.kind === 'folder' ? this.settings.mapping : null;
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			sync: emptyEngineState(),
 			activity: emptyActivity(),
+			shared: [],
+			sharedRoot,
 			installId,
 			mapping,
 			pendingRevocations,
@@ -1122,6 +1129,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			spaceId: settings.spaceId,
 			mapping,
 			configDir: this.app.vault.configDir,
+			sharedRoot: settings.sharedRoot,
 			state: settings.sync,
 			saveState: () => {
 				this.saveSoon();

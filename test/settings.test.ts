@@ -839,3 +839,48 @@ describe('Brain, with the scanner status', () => {
 		expect(view.items().some((i) => i.name === 'Scan progress')).toBe(false);
 	});
 });
+
+describe('shared settings', () => {
+	const ID = '6f1c1d9e-8f0a-4a57-9a51-2f4f3e0f9a10';
+	const NOTE = '0b8f6a3e-3b4c-4a57-8f0a-9a512f4f3e0f';
+
+	it('start empty, with the default shared folder', () => {
+		const settings = parseSettings(null);
+		expect(settings.sharedRoot).toBe('Shared with me');
+		expect(settings.shared).toEqual([]);
+		expect(settings.shared).not.toBe(DEFAULT_SETTINGS.shared);
+	});
+
+	it('keep well-formed spaces and notes, each once', () => {
+		const shared = [
+			{ kind: 'space', spaceId: ID, folder: 'Shared with me/Plans (Ada)', role: 'viewer' },
+			{ kind: 'space', spaceId: ID, folder: 'Shared with me/Other', role: 'editor' },
+			{ kind: 'note', noteId: NOTE, path: 'Shared with me/Ada/Note.md', role: 'editor' },
+		];
+		expect(parseSettings({ shared }).shared).toEqual([shared[0], shared[2]]);
+	});
+
+	it('drop mappings with a bad id, role or path', () => {
+		const bad = [
+			{ kind: 'space', spaceId: 'x', folder: 'A', role: 'viewer' },
+			{ kind: 'space', spaceId: ID, folder: '../A', role: 'viewer' },
+			{ kind: 'space', spaceId: ID, folder: '/A', role: 'viewer' },
+			{ kind: 'space', spaceId: ID, folder: 'A', role: 'owner' },
+			{ kind: 'note', noteId: 'x', path: 'A.md', role: 'viewer' },
+			{ kind: 'note', noteId: NOTE, path: '', role: 'viewer' },
+			{ kind: 'folder', path: 'A' },
+			'text',
+			null,
+		];
+		expect(parseSettings({ shared: bad }).shared).toEqual([]);
+		expect(parseSettings({ shared: 'broken' }).shared).toEqual([]);
+	});
+
+	it('keep a usable shared folder and replace others with the default', () => {
+		expect(parseSettings({ sharedRoot: 'From others' }).sharedRoot).toBe('From others');
+		expect(parseSettings({ sharedRoot: 'People/Shared' }).sharedRoot).toBe('People/Shared');
+		for (const value of ['', '/abs', '../up', '.hidden', 'a//b', 7, null]) {
+			expect(parseSettings({ sharedRoot: value }).sharedRoot).toBe('Shared with me');
+		}
+	});
+});

@@ -118,6 +118,7 @@ class Device {
 		private readonly hub: MemoryHub,
 		private readonly mapping: Mapping = WHOLE_VAULT,
 		private readonly configDir: string = CONFIG,
+		private readonly sharedRoot?: string,
 	) {}
 
 	async start(): Promise<void> {
@@ -129,6 +130,7 @@ class Device {
 			spaceId: SPACE_ID,
 			mapping: this.mapping,
 			configDir: this.configDir,
+			...(this.sharedRoot === undefined ? {} : { sharedRoot: this.sharedRoot }),
 			state: this.state,
 			saveState: () => undefined,
 			writeDelayMs: 1,
@@ -599,5 +601,48 @@ describe('a folder device whose space starts at the vault root meanwhile', () =>
 		a.vault.remove('Notes/Old.md');
 		await settle(a);
 		expect(indexOf(hub)).toEqual(before);
+	});
+});
+
+describe('the folder of notes shared by others', () => {
+	const SHARED = 'Shared with me';
+
+	it('is never part of a mapping, whole vault or a folder that contains it', () => {
+		expect(toRelative(WHOLE_VAULT, `${SHARED}/Space (Ada)/Plan.md`, CONFIG, SHARED)).toBeNull();
+		expect(toRelative(WHOLE_VAULT, `${SHARED}/Ada/Note.md`, CONFIG, SHARED)).toBeNull();
+		expect(toRelative(WHOLE_VAULT, 'Work/Plan.md', CONFIG, SHARED)).toBe('Work/Plan.md');
+		expect(toRelative(WHOLE_VAULT, `${SHARED} notes/Plan.md`, CONFIG, SHARED)).toBe(`${SHARED} notes/Plan.md`);
+		expect(toRelative(folderMapping('Work'), 'Work/Shared/Plan.md', CONFIG, 'Work/Shared')).toBeNull();
+		expect(toRelative(folderMapping('Work'), 'Work/Plan.md', CONFIG, 'Work/Shared')).toBe('Plan.md');
+	});
+
+	it('keeps shared notes out of the own index, from the whole vault', async () => {
+		const hub = new MemoryHub();
+		const a = new Device(hub, WHOLE_VAULT, CONFIG, SHARED);
+		const b = new Device(hub, WHOLE_VAULT, CONFIG, SHARED);
+		a.vault.write('Own.md', 'own');
+		a.vault.write(`${SHARED}/Space (Ada)/Theirs.md`, 'theirs');
+		a.vault.write(`${SHARED}/Ada/Single.md`, 'single');
+		await a.start();
+		await b.start();
+		await settle(a, b);
+		a.vault.write(`${SHARED}/Space (Ada)/Later.md`, 'later');
+		a.vault.move(`${SHARED}/Ada/Single.md`, `${SHARED}/Ada/Renamed.md`);
+		await settle(a, b);
+		expect(Object.keys(indexOf(hub))).toEqual(['Own.md']);
+		expect(Object.keys(b.files())).toEqual(['Own.md']);
+		a.vault.remove(`${SHARED}/Space (Ada)/Theirs.md`);
+		await settle(a, b);
+		expect(Object.keys(indexOf(hub))).toEqual(['Own.md']);
+	});
+
+	it('keeps shared notes out of the own index, from a folder that contains it', async () => {
+		const hub = new MemoryHub();
+		const a = new Device(hub, folderMapping('Work'), CONFIG, 'Work/Shared');
+		a.vault.write('Work/Plan.md', 'plan');
+		a.vault.write('Work/Shared/Ada/Single.md', 'single');
+		await a.start();
+		await settle(a);
+		expect(Object.keys(indexOf(hub))).toEqual(['Plan.md']);
 	});
 });

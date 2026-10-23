@@ -615,3 +615,20 @@ describe('a device linked to a space the person does not own', () => {
 		expect(app.vault.files.get('Notes/Mine.md')).toBe('mine');
 	}, 40_000);
 });
+
+describe('the folder of notes shared by others', () => {
+	it('cannot be chosen as the synced folder, and is not offered', async () => {
+		const app = new App();
+		app.vault.folders.add('Shared with me');
+		app.vault.folders.add('Shared with me/Plans (Ada)');
+		app.vault.folders.add('Work');
+		const plugin = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.3.3' } as never) as TestPlugin;
+		plugins.push(plugin);
+		await plugin.onload();
+		expect(plugin.folders()).toEqual(['Work']);
+		notices.length = 0;
+		await plugin.setFolder('Shared with me/Plans (Ada)', false);
+		expect(plugin.settings.mapping).toBeNull();
+		expect(notices.join(' ')).toContain('other people shared with you');
+	});
+});

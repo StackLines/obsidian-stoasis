@@ -53,15 +53,18 @@ export function isWithin(folder: string, path: string): boolean {
 
 /**
  * The path of a vault file relative to the mapping, or null when it is
- * outside it, is not a note, or is hidden. From the whole vault, the
- * configuration folder is outside too: it holds the paired key.
+ * outside it, is not a note, or is hidden. The `excluded` folders are outside
+ * too: the configuration folder holds the paired key, and notes shared by
+ * others are synced as theirs, not as new notes of this space.
  */
-export function toRelative(mapping: Mapping, vaultPath: string, configDir = ''): string | null {
+export function toRelative(mapping: Mapping, vaultPath: string, ...excluded: string[]): string | null {
+	// Folders that are never part of a mapping, such as the configuration folder
+	// and the folder of notes shared by others, whatever the mapping contains.
+	if (excluded.some((folder) => folder !== '' && isWithin(folder, vaultPath))) {
+		return null;
+	}
 	let rel: string;
 	if (mapping.kind === 'vault') {
-		if (configDir !== '' && isWithin(configDir, vaultPath)) {
-			return null;
-		}
 		rel = vaultPath;
 	} else {
 		const prefix = `${mapping.path}/`;

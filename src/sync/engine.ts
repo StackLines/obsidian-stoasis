@@ -102,6 +102,8 @@ export interface EngineOptions {
 	mapping: Mapping;
 	/** The vault's configuration folder, never synced from the whole vault. */
 	configDir?: string;
+	/** The folder of notes shared by others: never part of the mapping. */
+	sharedRoot?: string;
 	state: EngineState;
 	saveState: (state: EngineState) => void;
 	/** Delay before a remote change to a closed note is written to disk. */
@@ -1638,7 +1640,7 @@ export class SyncEngine {
 	}
 
 	private relative(path: string): string | null {
-		return toRelative(this.mapping, path, this.options.configDir);
+		return toRelative(this.mapping, path, this.options.configDir ?? '', this.options.sharedRoot ?? '');
 	}
 
 	private path(rel: string): string {
