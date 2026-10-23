@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-10-23
+
 ### Fixed
 
 - A device that version 0.3.0 linked to a space another person shared with you
