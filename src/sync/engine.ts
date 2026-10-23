@@ -500,7 +500,9 @@ export class SyncEngine {
 		this.recentDeletes = this.recentDeletes.filter((at) => now - at < DELETE_WINDOW_MS);
 		const total = new Set([...this.held, ...gone]).size + this.recentDeletes.length;
 		const known = Object.keys(this.state.known).length;
-		const tooMany = total >= MASS_DELETE_MIN || (emptyListing && known >= EMPTY_LISTING_MIN);
+		// A vault that empties while running (an unmounted disk) is as suspect as one found empty.
+		const empty = emptyListing || (gone.length > 0 && this.vault.listMarkdown(this.mapping).length === 0);
+		const tooMany = total >= MASS_DELETE_MIN || (empty && known >= EMPTY_LISTING_MIN);
 		if (this.held.size > 0 || tooMany) {
 			for (const rel of gone) {
 				this.held.add(rel);
