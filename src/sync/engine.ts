@@ -55,6 +55,12 @@ export const MASS_DELETE_MIN = 25;
 const EMPTY_LISTING_MIN = 5;
 /** Deletion events that arrive within this time are judged together. */
 const DELETE_BATCH_MS = 250;
+/**
+ * Deletions applied within this time count towards `MASS_DELETE_MIN` as well,
+ * so a slow trickle of them, such as a cloud app evicting files one by one,
+ * is held like a sudden one.
+ */
+const DELETE_WINDOW_MS = 60_000;
 
 const COMPARE_HINT = ' Open the copy and run "Compare with the synced note" to keep one of them.';
 
@@ -238,6 +244,8 @@ export class SyncEngine {
 	private stopped = false;
 	/** Notes missing from disk under the whole vault, not yet deleted from the space. */
 	private held = new Set<string>();
+	/** When notes were last deleted from the space for missing on disk, in ms. */
+	private recentDeletes: number[] = [];
 	private deciding = false;
 	private pendingDeletes = new Set<string>();
 	private deleteTimer: number | null = null;
@@ -486,7 +494,9 @@ export class SyncEngine {
 	/** Deletes the notes of `rels` that are gone, or holds them when there are too many. */
 	private async deleteOrHold(rels: string[], emptyListing: boolean): Promise<void> {
 		const gone = rels.filter((rel) => this.state.known[rel] !== undefined && !this.vault.exists(this.path(rel)));
-		const total = new Set([...this.held, ...gone]).size;
+		const now = this.now().getTime();
+		this.recentDeletes = this.recentDeletes.filter((at) => now - at < DELETE_WINDOW_MS);
+		const total = new Set([...this.held, ...gone]).size + this.recentDeletes.length;
 		const known = Object.keys(this.state.known).length;
 		const tooMany = total >= MASS_DELETE_MIN || (emptyListing && known >= EMPTY_LISTING_MIN);
 		if (this.held.size > 0 || tooMany) {
@@ -500,6 +510,7 @@ export class SyncEngine {
 			return;
 		}
 		for (const rel of gone) {
+			this.recentDeletes.push(now);
 			await this.diskDeleted(rel);
 		}
 	}
