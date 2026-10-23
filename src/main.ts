@@ -431,7 +431,8 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		const confirmed = await new ConfirmModal(
 			this.app,
 			'Sync the whole vault?',
-			`${text} Every Markdown note in this vault syncs, except Obsidian's own settings and hidden folders.`,
+			`${text} Every Markdown note in this vault syncs, except Obsidian's own settings and hidden folders. ` +
+				'Once a space syncs the whole vault, it cannot go back to a folder.',
 			'Sync the whole vault',
 		).ask();
 		if (!confirmed) {
@@ -500,6 +501,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			`The space now starts at "${folder}". It will start at the vault root: the notes in "${folder}" ` +
 				`stay where they are and keep their history, and ${outside} ${outside === 1 ? 'note' : 'notes'} ` +
 				'in other folders are uploaded as new notes. Your other devices will ask to follow. ' +
+				'Once a space syncs the whole vault, it cannot go back to a folder. ' +
 				'Update the plugin on all of them first: a device on version 0.2 does not understand this change.',
 			'Move the space',
 		).ask();

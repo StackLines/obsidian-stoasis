@@ -283,6 +283,7 @@ describe('plugin sync', () => {
 			const moving = a.chooseWholeVault();
 			const text = await answerNext('Move the space');
 			expect(text).toContain('The space now starts at "Notes"');
+			expect(text).toContain('cannot go back to a folder');
 			expect(text).toContain('2 notes');
 			expect(await moving).toBe(true);
 			expect(a.settings.mapping).toEqual({ kind: 'vault' });
@@ -449,6 +450,7 @@ describe('plugin sync', () => {
 			expect(plugin.settings.mapping).toBeNull();
 			// Hidden folders, the configuration folder and other files do not count.
 			expect(text).toContain('3 notes will be uploaded to your server.');
+			expect(text).toContain('cannot go back to a folder');
 			expect(text).toContain("except Obsidian's own settings and hidden folders");
 			expect(plugin.settings.syncEnabled).toBe(false);
 		});

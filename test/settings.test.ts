@@ -361,6 +361,16 @@ describe('settings tab', () => {
 		expect(items().some((i) => i.name === 'Pairing code')).toBe(false);
 	});
 
+	it('says a whole-vault space cannot be synced as a folder again', () => {
+		const host = paired();
+		host.settings.mapping = WHOLE_VAULT;
+		const { setting } = render(host);
+		expect(setting('Folder').desc).toContain(
+			'This space syncs the whole vault. It cannot be synced as a folder again.',
+		);
+		expect(setting('Folder').desc).not.toContain('downloads the space');
+	});
+
 	it('names the space generically while its name is not known', () => {
 		const host = paired();
 		host.settings.spaceName = '';
