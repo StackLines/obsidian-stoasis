@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The settings text of a whole-vault space no longer says that choosing a
   folder downloads notes into it: a whole-vault space cannot be synced as a
   folder again, and the confirmations for choosing the whole vault say so.
+- **Download to this device** on a space that syncs a whole vault asks about
+  syncing the whole vault, as it would on a device that syncs a folder, instead
+  of creating a folder and then asking to follow.
 - A small vault (5 to 24 notes) that disappears while Obsidian runs, such as an
   unmounted disk, is held like one found empty at start, not deleted
   everywhere.
@@ -154,9 +157,6 @@ between a conflict copy and its note.
 
 ### Fixed
 
-- Deleting many synced notes at once is held until you confirm, from 25 notes
-  whatever share of the vault they are (it was also required that they be a
-  quarter of it), and for a synced folder as well as the whole vault.
 - Renaming a note so that only the case of its name changes (`note.md` to
   `Note.md`) failed on devices whose file system ignores case, as on macOS,
   iOS and Windows.

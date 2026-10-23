@@ -244,6 +244,8 @@ describe('download to this device', () => {
 		plugins.push(plugin);
 		await plugin.onload();
 		expect(await plugin.pair(SERVER, 'ABCD2345', 'Phone')).toBe(true);
+		// No sync server here: the space looks like one that starts at a folder.
+		vi.spyOn(plugin as unknown as { withSpace: () => Promise<unknown> }, 'withSpace').mockResolvedValue(null);
 		return plugin;
 	}
 
