@@ -588,7 +588,8 @@ export class StoasisSettingTab extends PluginSettingTab {
 			.setName(`${space} is on your server`)
 			.setDesc(
 				`Download its notes into a new folder, "${folder}", on this device ` +
-					'and keep them in step with your other devices.',
+					'and keep them in step with your other devices. ' +
+					'If the space syncs a whole vault, you are asked about syncing the whole vault instead.',
 			)
 			.addButton((button) =>
 				button

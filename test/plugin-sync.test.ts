@@ -444,6 +444,28 @@ describe('plugin sync', () => {
 			expect(b.app.vault.files.get('Inbox.md')).toBe('inbox');
 		}, 40_000);
 
+		it('asks about the whole vault, not a folder, when a new device downloads the space', async () => {
+			const { plugin: a } = await vaultDevice('ABCD2345', { 'Inbox.md': 'inbox', 'Work/Plan.md': 'plan' });
+			await eventually(() => expect(status(a)).toBe('Stoasis: synced'), 8000);
+
+			const app = new App();
+			const b = new StoasisPlugin(app as never, { id: 'stoasis', version: '0.3.3' } as never) as TestPlugin;
+			plugins.push(b);
+			await b.onload();
+			app.workspace.ready();
+			expect(await b.pair(control.server, 'EFGH2345', 'Phone')).toBe(true);
+			openedModals.length = 0;
+			const downloading = b.downloadToDevice();
+			await eventually(() => expect(openedModals.length).toBe(1));
+			const modal = openedModals[0] as unknown as { contentEl: ContainerEl };
+			await eventually(() => expect(modal.contentEl.items.length).toBeGreaterThan(1));
+			const buttons = modal.contentEl.items.flatMap((i) => i.controls ?? []);
+			await (buttons.find((c) => c.label === 'Sync the whole vault') ?? fail()).click();
+			await downloading;
+			expect(b.settings.mapping).toEqual({ kind: 'vault' });
+			await eventually(() => expect(app.vault.files.get('Work/Plan.md')).toBe('plan'), 8000);
+		}, 40_000);
+
 		it('asks first, saying how many notes will be uploaded, and maps nothing when cancelled', async () => {
 			const { plugin, chosen, asked: text } = await vaultDevice('ABCD2345', VAULT, 'cancel');
 			expect(chosen).toBe(false);

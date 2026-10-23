@@ -640,6 +640,12 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	}
 
 	async downloadToDevice(): Promise<void> {
+		// A space that syncs a whole vault has no folder to download into: ask about the vault.
+		const look = await this.withSpace((doc) => readRootMeta(doc));
+		if (look !== undefined && look !== null) {
+			await this.chooseWholeVault();
+			return;
+		}
 		await this.applyMapping(folderMapping(this.downloadFolder()), true, true);
 	}
 
