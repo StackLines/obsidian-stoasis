@@ -574,6 +574,12 @@ export class SyncEngine {
 		return rel === null ? undefined : this.state.known[rel];
 	}
 
+	/** The vault path of the note synced with `id`, if this engine has it. */
+	pathOf(id: string): string | undefined {
+		const rel = Object.keys(this.state.known).find((r) => this.state.known[r] === id);
+		return rel === undefined ? undefined : this.path(rel);
+	}
+
 	/** The synced text of the note at `path` as it stands now, or null when the file is not synced. */
 	async noteText(path: string): Promise<string | null> {
 		const rel = this.relative(path);

@@ -8,6 +8,7 @@ import { emptyActivity, parseActivity, type ActivityData } from './activity';
 import { explainStatus, type SyncSnapshot } from './status';
 import { emptyEngineState, parseEngineState, type EngineState } from './sync/engine';
 import { folderMapping, WHOLE_VAULT, type Mapping } from './sync/paths';
+import { DEFAULT_PANEL, parsePanel, type PanelSettings } from './panel';
 import { DEFAULT_SHARED_ROOT, parseShared, parseSharedRoot, type SharedMapping } from './shared';
 
 export interface StoasisSettings {
@@ -37,6 +38,8 @@ export interface StoasisSettings {
 	sharedRoot: string;
 	/** What other people shared that this vault keeps; added on request only. */
 	shared: SharedMapping[];
+	/** Which blocks the Brain panel draws. */
+	panel: PanelSettings;
 	/** What synced lately and when the server was last reached; names and paths only. */
 	activity: ActivityData;
 }
@@ -63,6 +66,7 @@ export const DEFAULT_SETTINGS: Readonly<StoasisSettings> = {
 	folderWarnings: [],
 	sharedRoot: DEFAULT_SHARED_ROOT,
 	shared: [],
+	panel: { ...DEFAULT_PANEL },
 	activity: emptyActivity(),
 };
 
@@ -89,6 +93,7 @@ export function parseSettings(data: unknown): StoasisSettings {
 		pendingRevocations: [],
 		folderWarnings: [],
 		shared: [],
+		panel: { ...DEFAULT_PANEL },
 		activity: emptyActivity(),
 	};
 	if (typeof data !== 'object' || data === null) {
@@ -105,6 +110,7 @@ export function parseSettings(data: unknown): StoasisSettings {
 	settings.activity = parseActivity(stored['activity']);
 	settings.sharedRoot = parseSharedRoot(stored['sharedRoot']);
 	settings.shared = parseShared(stored['shared']);
+	settings.panel = parsePanel(stored['panel']);
 	settings.syncEnabled = stored['syncEnabled'] === true;
 	settings.sync = parseEngineState(stored['sync']);
 	const warnings = stored['folderWarnings'];
@@ -219,6 +225,8 @@ export interface SettingsHost extends Plugin {
 	brainApi(): BrainApi | null;
 	/** Opens the window with the last contact with the server and what synced lately. */
 	showActivity(): void;
+	/** The Brain panel's settings changed: draw it again, and show or hide the ribbon icon. */
+	panelChanged(): void;
 }
 
 const SCAN_MODE_NAMES: ReadonlyArray<[ScanMode, string]> = [
@@ -262,6 +270,7 @@ export class StoasisSettingTab extends PluginSettingTab {
 			this.showPaired();
 			this.showSync();
 			this.showBrain();
+			this.showPanel();
 		} else {
 			this.brain.reset();
 			this.showPairing();
@@ -478,6 +487,27 @@ export class StoasisSettingTab extends PluginSettingTab {
 	 * The scanner's switches. The section is not shown by a server without
 	 * them, and the space's controls only to its owner.
 	 */
+	private showPanel(): void {
+		const { containerEl } = this;
+		const panel = this.plugin.settings.panel;
+		new Setting(containerEl).setName('Brain panel').setHeading();
+		const toggle = (key: keyof PanelSettings, name: string, desc: string) =>
+			new Setting(containerEl)
+				.setName(name)
+				.setDesc(desc)
+				.addToggle((control) =>
+					control.setValue(panel[key]).onChange(async (value) => {
+						panel[key] = value;
+						await this.plugin.saveData(this.plugin.settings);
+						this.plugin.panelChanged();
+					}),
+				);
+		toggle('state', 'Summary', 'Show the note\'s state and summary.');
+		toggle('context', 'Topic', 'Show the Topic the note belongs to, with its open tasks.');
+		toggle('people', 'People and related notes', 'Show the people the note names and notes that relate to it.');
+		toggle('ribbon', 'Ribbon icon', 'Add an icon to the ribbon that opens the panel. The command "Show brain panel" is always there.');
+	}
+
 	private showBrain(): void {
 		const { containerEl } = this;
 		const settings = this.plugin.settings;

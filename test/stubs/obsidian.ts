@@ -587,6 +587,17 @@ export class App {
 
 export type ProtocolHandler = (params: Record<string, string>) => void;
 
+export class WorkspaceLeaf {
+	view: unknown = null;
+}
+
+export class ItemView {
+	contentEl = new ContainerEl();
+	app = new App();
+	constructor(public leaf: WorkspaceLeaf) {}
+	registerEvent(): void {}
+}
+
 export class Plugin {
 	app: App;
 	manifest: { id: string; version: string };
@@ -618,6 +629,16 @@ export class Plugin {
 	}
 	addSettingTab(tab: unknown): void {
 		this.settingTabs.push(tab);
+	}
+	views = new Map<string, unknown>();
+	registerView(type: string, creator: unknown): void {
+		this.views.set(type, creator);
+	}
+	ribbonIcons: Array<{ icon: string; title: string; remove: () => void }> = [];
+	addRibbonIcon(icon: string, title: string): { remove: () => void } {
+		const item = { icon, title, remove: () => void this.ribbonIcons.splice(this.ribbonIcons.indexOf(item), 1) };
+		this.ribbonIcons.push(item);
+		return item;
 	}
 	registerObsidianProtocolHandler(action: string, handler: ProtocolHandler): void {
 		this.protocolHandlers.set(action, handler);
