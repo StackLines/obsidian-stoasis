@@ -41,6 +41,7 @@ The name joins *stoa*, the covered walkway where people met to think together, w
 | Live sync of one folder with your personal space | shipped |
 | Syncing the whole vault, with a guard against mass deletions | shipped |
 | Note history: comparing an earlier version and restoring it | shipped |
+| Brain panel: what the Brain knows about the open note, in the right sidebar | shipped |
 | Space storage and scan progress in the Brain settings | shipped |
 | Sync status and history: last server contact, last note synced, what went up and down | shipped |
 | Offline editing with merge on reconnect | shipped |
@@ -64,7 +65,7 @@ The name joins *stoa*, the covered walkway where people met to think together, w
   short-lived sync tokens, tagging a note, the Brain settings (including
   your space's storage and the scanner's progress, read every minute while
   the settings tab is open and scanning is on), a note's earlier versions when
-  you open **Note history**, and one WebSocket for live sync while sync is on. Before pairing it makes no
+  you open **Note history**, what the Brain knows about a note while the **Brain panel** is open, and one WebSocket for live sync while sync is on. Before pairing it makes no
   network requests at all.
 - **Your note content is sent to that server** for the Markdown notes in the
   folder (or the whole vault) you choose to sync, and for a note you tag with **Tag this note
@@ -280,6 +281,17 @@ that every device merges, so the text it replaces is usually kept in the history
 the note changed while the window was open, the window shows the differences
 again instead of overwriting it. Versions are kept by the server and are as
 private as the note; a device only reads them when you open the window.
+
+### Brain panel
+
+Run **Show brain panel** from the command palette. It opens in the right
+sidebar, never by itself, and shows the open note's summary, its Topic with
+open tasks, the people it names and related notes, as far as your server
+knows them. It only reads: the buttons open a page of your server in the
+browser or a note in this vault, and **History** opens the note's history.
+Without a connection it shows the summary and tags from the note's own
+properties. Choose which blocks to show, and whether to add a ribbon icon, in
+the settings tab.
 
 ## Tagging
 

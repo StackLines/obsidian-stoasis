@@ -297,3 +297,26 @@ describe('download to this device', () => {
 		expect(plugin.downloadFolder()).toBe("Ada's notes 2026 10");
 	});
 });
+
+describe('the Brain panel', () => {
+	type Ribbon = { ribbonIcons: unknown[]; views: Map<string, unknown> };
+
+	it('registers its view and a command, and opens nothing by itself', async () => {
+		const plugin = await loadedPlugin();
+		plugins.push(plugin);
+		expect((plugin as unknown as Ribbon).views.has('stoasis-brain')).toBe(true);
+		expect(plugin.commands.map((c) => c.id)).toContain('show-brain-panel');
+		expect((plugin as unknown as Ribbon).ribbonIcons).toHaveLength(0);
+		expect(notices).toEqual([]);
+	});
+
+	it('adds a ribbon icon only when the user turns it on, and removes it again', async () => {
+		const plugin = await loadedPlugin({ panel: { ribbon: true } });
+		plugins.push(plugin);
+		const ribbon = plugin as unknown as Ribbon;
+		expect(ribbon.ribbonIcons).toHaveLength(1);
+		plugin.settings.panel.ribbon = false;
+		plugin.panelChanged();
+		expect(ribbon.ribbonIcons).toHaveLength(0);
+	});
+});

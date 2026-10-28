@@ -455,7 +455,7 @@ describe('settings tab: Brain', () => {
 		expect(items().some((i) => i.text === 'Asking the server…')).toBe(true);
 		await flush();
 		const names = items().filter((i) => i.kind === 'heading').map((i) => i.name);
-		expect(names).toEqual(['Sync', 'Brain', 'Network and privacy']);
+		expect(names).toEqual(['Sync', 'Brain', 'Brain panel', 'Network and privacy']);
 		expect(control('Scan my notes automatically').value).toBe(false);
 		expect(control('Scan mode for your space').value).toBe('off');
 		expect(control('Scan mode for your space').options.map(([value]) => value)).toEqual(['off', 'suggest', 'auto']);

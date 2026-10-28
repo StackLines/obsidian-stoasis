@@ -60,3 +60,60 @@
 .stoasis-activity td {
 	overflow-wrap: anywhere;
 }
+
+/* The Brain panel. Colours come from the theme; amber marks what the Brain added. */
+.stoasis-panel {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	font-size: var(--font-smaller);
+}
+
+.stoasis-panel-head,
+.stoasis-panel-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: var(--size-4-1) var(--size-4-3);
+}
+
+.stoasis-panel-head {
+	justify-content: space-between;
+}
+
+.stoasis-panel-title {
+	font-weight: var(--font-semibold);
+}
+
+.stoasis-panel-block {
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: var(--size-4-2);
+}
+
+.stoasis-panel-dim {
+	color: var(--text-muted);
+}
+
+.stoasis-panel-item {
+	margin-top: var(--size-4-1);
+}
+
+.stoasis-panel-brain {
+	background-color: rgba(var(--color-orange-rgb), 0.15);
+	border-radius: var(--radius-s);
+	padding: 0 var(--size-4-1);
+}
+
+.stoasis-panel-summary,
+.stoasis-panel-topic {
+	color: var(--text-normal);
+}
+
+.stoasis-panel-link {
+	cursor: pointer;
+}
+
+.stoasis-panel-button {
+	font-size: var(--font-smaller);
+	min-height: var(--input-height);
+}

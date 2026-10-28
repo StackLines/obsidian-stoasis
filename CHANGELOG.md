@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Brain panel**: a view in the right sidebar with what the Brain knows about
+  the open note: its summary, its Topic with open tasks, the people it names
+  and related notes, with **History** below. Open it with **Show brain panel**;
+  it never opens by itself, makes no sound and only reads. Without a
+  connection, or for a note the server does not have, it shows what the note's
+  own properties say. The settings tab chooses which blocks show and whether a
+  ribbon icon opens the panel.
+
 ### Changed
 
 - Groundwork for sharing: the settings keep a folder for notes other people

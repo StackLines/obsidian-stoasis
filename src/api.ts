@@ -257,6 +257,21 @@ export class NotesApi {
 		return { ...readVersion(body), text };
 	}
 
+	/**
+	 * What the Brain knows about a note, as the server sends it; null when the
+	 * server has no such note for this key, or does not offer this to it.
+	 */
+	async noteBrain(noteId: string): Promise<Record<string, unknown> | null> {
+		try {
+			return await this.call('GET', `/notes/${encodeURIComponent(noteId)}/brain`);
+		} catch (error) {
+			if (error instanceof ApiError && error.kind === 'not-found') {
+				return null;
+			}
+			throw error;
+		}
+	}
+
 	async scanSettings(): Promise<ScanSettings> {
 		return readScanSettings(await this.call('GET', '/scan-settings'));
 	}

@@ -12,6 +12,8 @@ import {
 } from 'obsidian';
 import { ApiError, NotesApi, type Space } from './api';
 import { HistoryModal } from './history-modal';
+import { BrainPanelView, PANEL_VIEW } from './panel-view';
+import type { OpenNote, PanelHost } from './panel';
 import { syncedEditors } from './editor';
 import { obsidianHttp } from './http';
 import { PairModal } from './pair-modal';
@@ -128,6 +130,9 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 	private session: Session | null = null;
 	private readonly editors = new EditorSync();
 	private statusEl: HTMLElement | null = null;
+	private ribbonEl: HTMLElement | null = null;
+	/** The note the Brain panel showed last, for its History button. */
+	private panelPath = '';
 	private settingTab: StoasisSettingTab | null = null;
 	/** Starts and stops run one at a time, in order. */
 	private lifecycle: Promise<void> = Promise.resolve();
@@ -164,6 +169,26 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		});
 		this.registerEditorExtension(syncedEditors(this.editors));
 
+		this.registerView(
+			PANEL_VIEW,
+			(leaf) =>
+				new BrainPanelView(
+					leaf,
+					(render) => this.panelHost(render),
+					{
+						openNote: (id) => this.openSyncedNote(id),
+						openUrl: (url) => void window.open(url),
+						history: () => this.showHistoryOfPanel(),
+						hide: () => this.hidePanel(),
+					},
+				),
+		);
+		this.addCommand({
+			id: 'show-brain-panel',
+			name: 'Show brain panel',
+			callback: () => void this.showPanel(),
+		});
+		this.panelChanged();
 		this.addCommand({
 			id: 'tag-note-now',
 			name: 'Tag this note now',
@@ -698,6 +723,82 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 		return file.extension === 'md' && this.session?.engine.noteAt(file.path) !== undefined;
 	}
 
+	/** Opens the Brain panel in the right sidebar; it never opens by itself. */
+	async showPanel(): Promise<void> {
+		const { workspace } = this.app;
+		let leaf = workspace.getLeavesOfType(PANEL_VIEW)[0] ?? null;
+		if (leaf === null) {
+			leaf = workspace.getRightLeaf(false);
+			await leaf?.setViewState({ type: PANEL_VIEW, active: true });
+		}
+		if (leaf !== null) {
+			if (workspace.rightSplit.collapsed) {
+				workspace.rightSplit.expand();
+			}
+			workspace.setActiveLeaf(leaf);
+		}
+	}
+
+	private hidePanel(): void {
+		this.app.workspace.detachLeavesOfType(PANEL_VIEW);
+	}
+
+	/** The panel's settings changed: draw the open panel again, and show or hide the ribbon icon. */
+	panelChanged(): void {
+		this.ribbonEl?.remove();
+		this.ribbonEl = this.settings.panel.ribbon
+			? this.addRibbonIcon('sparkles', 'Show brain panel', () => void this.showPanel())
+			: null;
+		for (const leaf of this.app.workspace.getLeavesOfType(PANEL_VIEW)) {
+			(leaf.view as BrainPanelView).settingsChanged();
+		}
+	}
+
+	private panelHost(render: PanelHost['render']): PanelHost {
+		return {
+			current: (): OpenNote | null | undefined => {
+				const { workspace, metadataCache } = this.app;
+				// The panel itself and the sidebars take focus, so look at the editor area's last leaf.
+				const leaf = workspace.getMostRecentLeaf();
+				if (leaf === null) {
+					return null;
+				}
+				const file = leaf.view instanceof MarkdownView ? leaf.view.file : null;
+				if (file === null) {
+					return undefined;
+				}
+				this.panelPath = file.path;
+				return {
+					path: file.path,
+					id: this.session?.engine.noteAt(file.path) ?? null,
+					frontmatter: metadataCache.getFileCache(file)?.frontmatter ?? {},
+				};
+			},
+			load: async (id) => (await this.brainApi()?.noteBrain(id)) ?? null,
+			settings: () => this.settings.panel,
+			origin: () => (getPairingState(this.settings) === 'paired' ? this.settings.serverUrl.replace(/\/+$/, '') : null),
+			now: () => new Date(),
+			render,
+		};
+	}
+
+	private openSyncedNote(id: string): boolean {
+		const path = this.session?.engine.pathOf(id);
+		const file = path === undefined ? null : this.app.vault.getAbstractFileByPath(path);
+		if (!(file instanceof TFile)) {
+			return false;
+		}
+		void this.app.workspace.getLeaf(false).openFile(file);
+		return true;
+	}
+
+	private showHistoryOfPanel(): void {
+		const file = this.panelPath === '' ? null : this.app.vault.getAbstractFileByPath(this.panelPath);
+		if (file instanceof TFile) {
+			this.showHistory(file);
+		}
+	}
+
 	/** Opens the history of a synced note, to look at an earlier version or restore it. */
 	private activityLog(): ActivityLog {
 		return new ActivityLog(this.settings.activity);
@@ -991,7 +1092,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 
 	private forgetPairing(): void {
 		// Which folder warnings were shown is about this device, not the pairing.
-		const { installId, pendingRevocations, folderWarnings, sharedRoot } = this.settings;
+		const { installId, pendingRevocations, folderWarnings, sharedRoot, panel } = this.settings;
 		// A folder stays; the whole vault is chosen per space, after its check and window.
 		const mapping = this.settings.mapping?.kind === 'folder' ? this.settings.mapping : null;
 		this.settings = {
@@ -999,6 +1100,7 @@ export default class StoasisPlugin extends Plugin implements SettingsHost {
 			sync: emptyEngineState(),
 			activity: emptyActivity(),
 			shared: [],
+			panel,
 			sharedRoot,
 			installId,
 			mapping,
